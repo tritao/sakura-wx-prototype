@@ -21,6 +21,7 @@ TerminalCore::TerminalCore(WriteCallback write_callback)
         return;
     }
 
+    tsm_vte_set_mouse_cb(vte_, &TerminalCore::VteMouse, this);
     tsm_vte_set_palette(vte_, "base16-dark");
 }
 
@@ -64,6 +65,26 @@ void TerminalCore::Paste(const std::string& text)
     tsm_vte_paste(vte_, text.c_str());
 }
 
+bool TerminalCore::HandleMouse(unsigned int cell_x, unsigned int cell_y,
+                               unsigned int pixel_x, unsigned int pixel_y,
+                               unsigned int button, unsigned int event,
+                               unsigned char modifiers)
+{
+    if (vte_ == nullptr)
+        return false;
+    ++metrics_.mouse_events;
+    const bool handled = tsm_vte_handle_mouse(
+        vte_, cell_x, cell_y, pixel_x, pixel_y, button, event, modifiers);
+    if (handled)
+        ++metrics_.mouse_events_forwarded;
+    return handled;
+}
+
+bool TerminalCore::MouseReportingEnabled() const
+{
+    return vte_ != nullptr && tsm_vte_get_mouse_mode(vte_) != 0;
+}
+
 void TerminalCore::ScrollPageUp(unsigned int pages)
 {
     if (screen_ != nullptr)
@@ -74,6 +95,16 @@ void TerminalCore::ScrollPageDown(unsigned int pages)
 {
     if (screen_ != nullptr)
         tsm_screen_sb_page_down(screen_, pages);
+}
+
+void TerminalCore::ScrollLines(int lines)
+{
+    if (screen_ == nullptr || lines == 0)
+        return;
+    if (lines > 0)
+        tsm_screen_sb_up(screen_, static_cast<unsigned int>(lines));
+    else
+        tsm_screen_sb_down(screen_, static_cast<unsigned int>(-lines));
 }
 
 void TerminalCore::StartSelection(unsigned int column, unsigned int row)
@@ -184,4 +215,13 @@ void TerminalCore::VteWrite(struct tsm_vte*, const char* data,
     ++core->metrics_.transport_write_events;
     if (core->write_callback_)
         core->write_callback_(data, length);
+}
+
+void TerminalCore::VteMouse(struct tsm_vte*,
+                            enum tsm_mouse_track_mode,
+                            bool,
+                            void* user_data)
+{
+    auto* core = static_cast<TerminalCore*>(user_data);
+    ++core->metrics_.mouse_mode_changes;
 }

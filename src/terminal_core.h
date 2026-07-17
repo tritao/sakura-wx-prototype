@@ -37,6 +37,9 @@ struct TerminalMetrics {
     uint64_t max_render_latency_us = 0;
     uint64_t selection_copies = 0;
     uint64_t paste_bytes = 0;
+    uint64_t mouse_mode_changes = 0;
+    uint64_t mouse_events = 0;
+    uint64_t mouse_events_forwarded = 0;
 };
 
 class TerminalCore final {
@@ -57,8 +60,14 @@ public:
     bool HandleKey(uint32_t keysym, uint32_t ascii, unsigned int modifiers,
                    uint32_t unicode);
     void Paste(const std::string& text);
+    bool HandleMouse(unsigned int cell_x, unsigned int cell_y,
+                     unsigned int pixel_x, unsigned int pixel_y,
+                     unsigned int button, unsigned int event,
+                     unsigned char modifiers);
+    bool MouseReportingEnabled() const;
     void ScrollPageUp(unsigned int pages);
     void ScrollPageDown(unsigned int pages);
+    void ScrollLines(int lines);
 
     void StartSelection(unsigned int column, unsigned int row);
     void UpdateSelection(unsigned int column, unsigned int row);
@@ -74,6 +83,9 @@ public:
 private:
     static void VteWrite(struct tsm_vte* vte, const char* data,
                          std::size_t length, void* user_data);
+    static void VteMouse(struct tsm_vte* vte,
+                         enum tsm_mouse_track_mode track_mode,
+                         bool track_pixels, void* user_data);
 
     WriteCallback write_callback_;
     struct tsm_screen* screen_ = nullptr;

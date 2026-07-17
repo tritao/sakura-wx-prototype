@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -125,6 +126,51 @@ int main()
         unicode_selection_core.SelectWord(3, 0);
         Check(unicode_selection_core.CopySelection() == "caf\xC3\xA9",
               "Unicode word selection returned unexpected text");
+
+        std::string mouse_writes;
+        TerminalCore mouse_core([&mouse_writes](const char* data,
+                                                 std::size_t length) {
+            mouse_writes.append(data, length);
+        });
+        Check(mouse_core.Resize(20, 4), "mouse core resize failed");
+        const char* enable_mouse = "\x1b[?1000h\x1b[?1006h";
+        mouse_core.FeedOutput(enable_mouse, std::strlen(enable_mouse));
+        Check(mouse_core.MouseReportingEnabled(),
+              "mouse reporting mode was not detected");
+        Check(mouse_core.HandleMouse(2, 3, 20, 30, TSM_MOUSE_BUTTON_LEFT,
+                                     TSM_MOUSE_EVENT_PRESSED,
+                                     TSM_MOUSE_MODIFIER_SHIFT),
+              "mouse press was not forwarded");
+        Check(mouse_writes == "\x1b[<4;3;4M",
+              "mouse press was encoded incorrectly");
+        Check(mouse_core.HandleMouse(2, 3, 20, 30, TSM_MOUSE_BUTTON_LEFT,
+                                     TSM_MOUSE_EVENT_RELEASED, 0),
+              "mouse release was not forwarded");
+        Check(mouse_writes == "\x1b[<4;3;4M\x1b[<0;3;4m",
+              "mouse release was encoded incorrectly");
+        const TerminalMetrics mouse_metrics = mouse_core.GetMetrics();
+        Check(mouse_metrics.mouse_events == 2 &&
+                  mouse_metrics.mouse_events_forwarded == 2 &&
+                  mouse_metrics.mouse_mode_changes >= 2,
+              "mouse metrics were not recorded");
+
+        TerminalCore scroll_core(nullptr);
+        Check(scroll_core.Resize(20, 3), "scroll core resize failed");
+        std::string scroll_output;
+        for (unsigned int line = 0; line < 8; ++line) {
+            scroll_output += "scroll-" + std::to_string(line) + "\r\n";
+        }
+        scroll_core.FeedOutput(scroll_output.data(), scroll_output.size());
+        const TerminalSnapshot bottom_snapshot = scroll_core.TakeSnapshot();
+        scroll_core.ScrollLines(1);
+        const TerminalSnapshot up_snapshot = scroll_core.TakeSnapshot();
+        Check(bottom_snapshot.cells[7].codepoint != up_snapshot.cells[7].codepoint,
+              "scrolling one line did not change the visible screen");
+        scroll_core.ScrollLines(-1);
+        const TerminalSnapshot restored_snapshot = scroll_core.TakeSnapshot();
+        Check(restored_snapshot.cells[7].codepoint ==
+                  bottom_snapshot.cells[7].codepoint,
+              "scrolling back down did not restore the visible screen");
 
         std::cout << "terminal_core: PASS\n";
         return 0;

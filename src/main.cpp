@@ -43,6 +43,10 @@ public:
         Bind(wxEVT_LEFT_DOWN, &TerminalPanel::OnLeftDown, this);
         Bind(wxEVT_LEFT_DCLICK, &TerminalPanel::OnLeftDown, this);
         Bind(wxEVT_LEFT_UP, &TerminalPanel::OnLeftUp, this);
+        Bind(wxEVT_RIGHT_DOWN, &TerminalPanel::OnMouseButtonDown, this);
+        Bind(wxEVT_RIGHT_UP, &TerminalPanel::OnMouseButtonUp, this);
+        Bind(wxEVT_MIDDLE_DOWN, &TerminalPanel::OnMouseButtonDown, this);
+        Bind(wxEVT_MIDDLE_UP, &TerminalPanel::OnMouseButtonUp, this);
         Bind(wxEVT_MOTION, &TerminalPanel::OnMotion, this);
         Bind(wxEVT_TIMER, &TerminalPanel::OnTimer, this);
 
@@ -230,6 +234,18 @@ private:
 
     void OnMouseWheel(wxMouseEvent& event)
     {
+        if (!event.ShiftDown() && core_.MouseReportingEnabled()) {
+            const unsigned int button = event.GetWheelRotation() > 0
+                ? TSM_MOUSE_BUTTON_WHEEL_UP
+                : TSM_MOUSE_BUTTON_WHEEL_DOWN;
+            core_.HandleMouse(CellAt(event.GetPosition()).first,
+                              CellAt(event.GetPosition()).second,
+                              static_cast<unsigned int>(std::max(0, event.GetX())),
+                              static_cast<unsigned int>(std::max(0, event.GetY())),
+                              button, TSM_MOUSE_EVENT_PRESSED,
+                              MouseModifiers(event));
+            return;
+        }
         if (event.GetWheelRotation() > 0)
             core_.ScrollPageUp(3);
         else if (event.GetWheelRotation() < 0)
@@ -247,10 +263,60 @@ private:
         };
     }
 
+    static unsigned char MouseModifiers(const wxMouseEvent& event)
+    {
+        unsigned char modifiers = 0;
+        if (event.ShiftDown()) modifiers |= TSM_MOUSE_MODIFIER_SHIFT;
+        if (event.MetaDown()) modifiers |= TSM_MOUSE_MODIFIER_META;
+        if (event.ControlDown()) modifiers |= TSM_MOUSE_MODIFIER_CTRL;
+        return modifiers;
+    }
+
+    bool ForwardMouse(const wxMouseEvent& event, unsigned int button,
+                      unsigned int mouse_event)
+    {
+        if (event.ShiftDown() || !core_.MouseReportingEnabled())
+            return false;
+        const auto [column, row] = CellAt(event.GetPosition());
+        return core_.HandleMouse(
+            column, row,
+            static_cast<unsigned int>(std::max(0, event.GetX())),
+            static_cast<unsigned int>(std::max(0, event.GetY())),
+            button, mouse_event, MouseModifiers(event));
+    }
+
+    void BeginMouseReporting(unsigned int button)
+    {
+        mouse_reporting_gesture_ = true;
+        mouse_reporting_button_ = button;
+        CaptureMouse();
+    }
+
+    void EndMouseReporting(const wxMouseEvent& event)
+    {
+        if (!mouse_reporting_gesture_)
+            return;
+        const auto [column, row] = CellAt(event.GetPosition());
+        core_.HandleMouse(
+            column, row,
+            static_cast<unsigned int>(std::max(0, event.GetX())),
+            static_cast<unsigned int>(std::max(0, event.GetY())),
+            mouse_reporting_button_, TSM_MOUSE_EVENT_RELEASED,
+            MouseModifiers(event));
+        mouse_reporting_gesture_ = false;
+        if (HasCapture())
+            ReleaseMouse();
+    }
+
     void OnLeftDown(wxMouseEvent& event)
     {
         SetFocus();
         const auto [column, row] = CellAt(event.GetPosition());
+        if (ForwardMouse(event, TSM_MOUSE_BUTTON_LEFT,
+                         TSM_MOUSE_EVENT_PRESSED)) {
+            BeginMouseReporting(TSM_MOUSE_BUTTON_LEFT);
+            return;
+        }
         const auto now = std::chrono::steady_clock::now();
         const bool same_cell = column == last_click_column_ &&
                                row == last_click_row_;
@@ -264,14 +330,19 @@ private:
         last_click_column_ = column;
         last_click_row_ = row;
 
-        core_.ClearSelection();
-        if (click_count_ == 2)
-            core_.SelectWord(column, row);
-        else if (click_count_ == 3)
-            core_.SelectLine(row);
+        const bool extend_selection = event.ShiftDown() && core_.HasSelection();
+        if (extend_selection) {
+            core_.UpdateSelection(column, row);
+        } else {
+            core_.ClearSelection();
+            if (click_count_ == 2)
+                core_.SelectWord(column, row);
+            else if (click_count_ == 3)
+                core_.SelectLine(row);
+        }
 
         pointer_down_ = true;
-        selection_dragging_ = false;
+        selection_dragging_ = extend_selection;
         pointer_down_position_ = event.GetPosition();
         selection_anchor_column_ = column;
         selection_anchor_row_ = row;
@@ -281,6 +352,10 @@ private:
 
     void OnLeftUp(wxMouseEvent& event)
     {
+        if (mouse_reporting_gesture_) {
+            EndMouseReporting(event);
+            return;
+        }
         if (!pointer_down_)
             return;
         const auto [column, row] = CellAt(event.GetPosition());
@@ -289,6 +364,7 @@ private:
             core_.UpdateSelection(column, row);
         selection_dragging_ = false;
         pointer_down_ = false;
+        auto_scroll_direction_ = 0;
         if (HasCapture())
             ReleaseMouse();
         if (should_copy)
@@ -296,10 +372,62 @@ private:
         Refresh(false);
     }
 
+    void OnMouseButtonDown(wxMouseEvent& event)
+    {
+        const unsigned int button = event.RightDown()
+            ? TSM_MOUSE_BUTTON_RIGHT
+            : TSM_MOUSE_BUTTON_MIDDLE;
+        if (ForwardMouse(event, button, TSM_MOUSE_EVENT_PRESSED))
+            BeginMouseReporting(button);
+    }
+
+    void OnMouseButtonUp(wxMouseEvent& event)
+    {
+        if (mouse_reporting_gesture_)
+            EndMouseReporting(event);
+    }
+
+    void UpdateSelectionAt(const wxPoint& position)
+    {
+        auto_scroll_direction_ = 0;
+        if (position.y < 0)
+            auto_scroll_direction_ = -1;
+        else if (position.y >= GetClientSize().GetHeight())
+            auto_scroll_direction_ = 1;
+
+        if (auto_scroll_direction_ != 0)
+            core_.ScrollLines(auto_scroll_direction_ < 0 ? 1 : -1);
+
+        const auto [column, row] = CellAt(position);
+        core_.UpdateSelection(column, row);
+    }
+
     void OnMotion(wxMouseEvent& event)
     {
-        if (!pointer_down_ || !event.Dragging())
+        if (mouse_reporting_gesture_) {
+            if (event.Dragging()) {
+                const auto [column, row] = CellAt(event.GetPosition());
+                core_.HandleMouse(
+                    column, row,
+                    static_cast<unsigned int>(std::max(0, event.GetX())),
+                    static_cast<unsigned int>(std::max(0, event.GetY())),
+                    32 + mouse_reporting_button_, TSM_MOUSE_EVENT_MOVED,
+                    MouseModifiers(event));
+            }
             return;
+        }
+        if (!pointer_down_ || !event.Dragging()) {
+            if (!event.ShiftDown() && core_.MouseReportingEnabled()) {
+                const auto [column, row] = CellAt(event.GetPosition());
+                core_.HandleMouse(
+                    column, row,
+                    static_cast<unsigned int>(std::max(0, event.GetX())),
+                    static_cast<unsigned int>(std::max(0, event.GetY())),
+                    TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_MOVED,
+                    MouseModifiers(event));
+            }
+            return;
+        }
         const wxPoint position = event.GetPosition();
         const int distance_x = std::abs(position.x - pointer_down_position_.x);
         const int distance_y = std::abs(position.y - pointer_down_position_.y);
@@ -309,8 +437,8 @@ private:
         }
         if (!selection_dragging_)
             return;
-        const auto [column, row] = CellAt(event.GetPosition());
-        core_.UpdateSelection(column, row);
+        last_pointer_position_ = position;
+        UpdateSelectionAt(position);
         Refresh(false);
     }
 
@@ -452,6 +580,16 @@ public:
         OnLeftUp(up);
         if (core_.CopySelection().find("scenario") == std::string::npos)
             return false;
+
+        wxMouseEvent shift_down(wxEVT_LEFT_DOWN);
+        shift_down.SetShiftDown(true);
+        shift_down.SetPosition(wxPoint(9 * cell_width_ + 1, 1));
+        OnLeftDown(shift_down);
+        wxMouseEvent shift_up(wxEVT_LEFT_UP);
+        shift_up.SetPosition(shift_down.GetPosition());
+        OnLeftUp(shift_up);
+        if (core_.CopySelection().find("scenario") == std::string::npos)
+            return false;
         if (!CopySelectionToClipboard())
             return false;
         if (!PasteFromClipboard())
@@ -465,6 +603,12 @@ private:
 
     void OnTimer(wxTimerEvent&)
     {
+        if (selection_dragging_ && auto_scroll_direction_ != 0) {
+            core_.ScrollLines(auto_scroll_direction_ < 0 ? 1 : -1);
+            const auto [column, row] = CellAt(last_pointer_position_);
+            core_.UpdateSelection(column, row);
+            Refresh(false);
+        }
         const auto output = transport_->TakeOutput();
         for (const auto& chunk : output)
             core_.FeedOutput(chunk.data(), chunk.size());
@@ -481,6 +625,7 @@ private:
                              "[metrics] output=%lluB/%llu chunks input=%llu "
                              "writes=%lluB/%llu renders=%llu selection=%llu "
                              "latency-max=%lluus/%llu paste=%lluB "
+                             "mouse=%llu/%llu modes=%llu "
                              "transport-read=%lluB/%llu "
                              "queue-high-water=%llu resize=%llu\n",
                              static_cast<unsigned long long>(core_metrics.output_bytes),
@@ -493,6 +638,9 @@ private:
                              static_cast<unsigned long long>(core_metrics.max_render_latency_us),
                              static_cast<unsigned long long>(core_metrics.render_latency_samples),
                              static_cast<unsigned long long>(core_metrics.paste_bytes),
+                             static_cast<unsigned long long>(core_metrics.mouse_events),
+                             static_cast<unsigned long long>(core_metrics.mouse_events_forwarded),
+                             static_cast<unsigned long long>(core_metrics.mouse_mode_changes),
                              static_cast<unsigned long long>(transport_metrics.bytes_read),
                              static_cast<unsigned long long>(transport_metrics.read_events),
                              static_cast<unsigned long long>(transport_metrics.max_queued_bytes),
@@ -513,6 +661,7 @@ private:
     unsigned int rows_ = 24;
     bool selection_dragging_ = false;
     bool pointer_down_ = false;
+    bool mouse_reporting_gesture_ = false;
     bool trace_metrics_ = false;
     int click_count_ = 0;
     wxPoint pointer_down_position_;
@@ -520,6 +669,9 @@ private:
     unsigned int selection_anchor_row_ = 0;
     unsigned int last_click_column_ = 0;
     unsigned int last_click_row_ = 0;
+    unsigned int mouse_reporting_button_ = TSM_MOUSE_BUTTON_LEFT;
+    int auto_scroll_direction_ = 0;
+    wxPoint last_pointer_position_;
     std::chrono::steady_clock::time_point last_click_time_;
     TransportState last_transport_state_ = TransportState::Stopped;
     std::chrono::steady_clock::time_point last_metrics_log_;

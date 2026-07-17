@@ -6,7 +6,9 @@ The prototype currently provides:
 
 - wxWidgets window and custom terminal-cell drawing;
 - libtsm VT parsing, colors, cursor, scrollback, keyboard handling, and palette;
-- mouse drag selection, clipboard copy/paste, and core/transport telemetry;
+- drag, word, line, multiline, Unicode, and scrollback selection with automatic copy;
+- scrollback auto-scroll, Shift-click extension, application mouse reporting, and Shift-forced local selection;
+- clipboard copy/paste and core/transport telemetry;
 - process lifecycle state, exit status, visible exit notices, and `Ctrl+Shift+R` restart;
 - a POSIX `forkpty()` process bridge, including macOS, with shell resize and output polling;
 - a Windows ConPTY process bridge selected automatically by the transport factory;
