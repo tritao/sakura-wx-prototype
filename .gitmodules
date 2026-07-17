@@ -3,4 +3,5 @@
 	url = https://github.com/wxWidgets/wxWidgets.git
 [submodule "third_party/libtsm"]
 	path = third_party/libtsm
-	url = https://github.com/kmscon/libtsm.git
+	url = https://github.com/tritao/libtsm.git
+	branch = sakura/combining-marks

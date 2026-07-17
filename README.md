@@ -80,10 +80,9 @@ The core tests use semantic screen snapshots, while the PTY stress test exercise
 
 The renderer preserves libtsm's UTF-8 cell text and wide-cell widths, and maps
 bold, italic, underline, dim, inverse, truecolor, and DECSCUSR cursor styles
-into wxWidgets drawing state. libtsm v4.6.0 currently discards standalone
-zero-width combining marks while parsing VTE input; precomposed Unicode and
-wide glyphs are covered now, and combining-mark support remains a targeted
-follow-up before this prototype is used as a production terminal core.
+into wxWidgets drawing state. The libtsm submodule tracks the
+`tritao/libtsm` fork's `sakura/combining-marks` branch, which preserves
+zero-width combining marks in screen cells and selection copy.
 
 Set `SAKURA_TRACE_METRICS=1` when running the app to print periodic output,
 input, rendering latency, clipboard, transport queue, and resize counters:
@@ -96,7 +95,7 @@ wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidget
 
 ## Follow-up work
 
-1. Add a compatibility layer or upstream fix for libtsm's standalone combining-mark path, then add grapheme-cluster selection tests.
+1. Expand combining-mark coverage into full grapheme-cluster and emoji ZWJ selection tests.
 2. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
 3. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
 

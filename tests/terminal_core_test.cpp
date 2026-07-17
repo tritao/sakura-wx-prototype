@@ -145,8 +145,19 @@ int main()
         Check(CellAt(glyph_snapshot, 0, 0).text == "\xe7\x95\x8c" &&
                   CellAt(glyph_snapshot, 0, 0).width == 2,
               "wide glyph was not preserved");
-        Check(CellAt(glyph_snapshot, 2, 0).text == "e",
-              "UTF-8 base glyph was not preserved");
+        Check(CellAt(glyph_snapshot, 2, 0).text == "e\xcc\x81" &&
+                  CellAt(glyph_snapshot, 2, 0).width == 1 &&
+                  glyph_snapshot.cursor_x == 3,
+              "combining glyph was not preserved as one terminal cell");
+
+        TerminalCore combining_selection_core(nullptr);
+        Check(combining_selection_core.Resize(20, 3),
+              "combining selection core resize failed");
+        combining_selection_core.FeedOutput("e\xcc\x81", 3);
+        combining_selection_core.StartSelection(0, 0);
+        combining_selection_core.UpdateSelection(0, 0);
+        Check(combining_selection_core.CopySelection() == "e\xcc\x81",
+              "combining mark was lost during selection copy");
 
         TerminalCore unicode_core(nullptr);
         Check(unicode_core.Resize(20, 4), "unicode core resize failed");
