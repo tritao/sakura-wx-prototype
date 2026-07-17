@@ -198,6 +198,16 @@ if(BUILD_TESTING)
     target_link_libraries(sakura_terminal_core_test PRIVATE sakura_terminal_core)
     add_test(NAME terminal_core COMMAND sakura_terminal_core_test)
 
+    add_executable(sakura-vt-replay
+        tests/vt_replay.cpp
+    )
+    target_link_libraries(sakura-vt-replay PRIVATE sakura_terminal_core)
+    add_test(NAME vt_replay
+        COMMAND sakura-vt-replay
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.vtlog"
+    )
+    set_tests_properties(vt_replay PROPERTIES TIMEOUT 10)
+
     add_executable(sakura_library_consumer_test
         tests/library_consumer_test.cpp
     )
@@ -253,6 +263,7 @@ if(BUILD_TESTING)
 
     if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
         sakura_enable_sanitizers(sakura_terminal_core_test)
+        sakura_enable_sanitizers(sakura-vt-replay)
         if(TARGET sakura_pty_stress_test)
             sakura_enable_sanitizers(sakura_pty_stress_test)
         endif()

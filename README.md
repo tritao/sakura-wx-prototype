@@ -134,6 +134,18 @@ BUILD_DIR=build-sanitize SAKURA_ENABLE_SANITIZERS=ON RUN_TESTS=1 ./build.sh
 
 The core tests use semantic screen snapshots, while the PTY stress test exercises burst output, repeated resize, child completion, and shutdown. Transport lifecycle tests cover clean exit and failed shell startup. The wx smoke and UX tests run the real window under Xvfb when available.
 
+The deterministic VT replay harness runs hex-encoded session fixtures through
+`TerminalCore` and checks semantic cells, cursor state, titles, selection,
+paste accounting, and metrics:
+
+```sh
+./build/sakura-vt-replay tests/fixtures/basic.vtlog
+```
+
+Replay fixtures use line-oriented commands such as `resize`, `output`,
+`paste`, `select`, and `expect`. Keeping terminal payloads as hexadecimal
+bytes makes control sequences and Unicode input stable under version control.
+
 The renderer preserves libtsm's UTF-8 cell text and wide-cell widths, and maps
 bold, italic, underline, dim, inverse, truecolor, and DECSCUSR cursor styles
 into wxWidgets drawing state. The libtsm submodule tracks the

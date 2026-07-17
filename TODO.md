@@ -5,7 +5,7 @@ cross-platform terminal library and a Sakura frontend foundation.
 
 ## Terminal correctness and test infrastructure
 
-- [ ] Build a deterministic VT replay harness for recorded terminal sessions.
+- [x] Build a deterministic VT replay harness for recorded terminal sessions.
   - Feed captured byte streams into `TerminalCore`.
   - Record snapshots, cursor state, selection output, titles, and metrics.
   - Support deterministic regression fixtures and replay failures.
