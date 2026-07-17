@@ -91,6 +91,24 @@ void TerminalCore::UpdateSelection(unsigned int column, unsigned int row)
         tsm_screen_selection_target(screen_, column, row);
 }
 
+void TerminalCore::SelectWord(unsigned int column, unsigned int row)
+{
+    if (screen_ == nullptr || column >= tsm_screen_get_width(screen_) ||
+        row >= tsm_screen_get_height(screen_))
+        return;
+    tsm_screen_selection_reset(screen_);
+    tsm_screen_selection_word(screen_, column, row);
+    selection_active_ = true;
+}
+
+void TerminalCore::SelectLine(unsigned int row)
+{
+    if (screen_ == nullptr || row >= tsm_screen_get_height(screen_))
+        return;
+    StartSelection(0, row);
+    UpdateSelection(tsm_screen_get_width(screen_) - 1, row);
+}
+
 void TerminalCore::ClearSelection()
 {
     if (screen_ != nullptr)
@@ -106,8 +124,10 @@ std::string TerminalCore::CopySelection()
     char* text = nullptr;
     // libtsm returns the copied byte count on success and a negative errno
     // value on failure, rather than zero for success.
-    if (tsm_screen_selection_copy(screen_, &text) < 0 || text == nullptr)
+    if (tsm_screen_selection_copy(screen_, &text) < 0 || text == nullptr) {
+        selection_active_ = false;
         return {};
+    }
 
     std::string result(text);
     std::free(text);

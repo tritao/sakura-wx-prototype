@@ -103,6 +103,29 @@ int main()
         Check(metrics.selection_copies == 1 && metrics.paste_bytes == 6,
               "selection metrics were not recorded");
 
+        TerminalCore selection_behavior_core(nullptr);
+        Check(selection_behavior_core.Resize(30, 6),
+              "selection behavior core resize failed");
+        selection_behavior_core.FeedOutput("one\r\ntwo", 8);
+        selection_behavior_core.StartSelection(0, 0);
+        selection_behavior_core.UpdateSelection(2, 1);
+        Check(selection_behavior_core.CopySelection() == "one\ntwo",
+              "multiline selection returned unexpected text");
+        selection_behavior_core.SelectWord(1, 0);
+        Check(selection_behavior_core.CopySelection() == "one",
+              "word selection returned unexpected text");
+        selection_behavior_core.SelectLine(1);
+        Check(selection_behavior_core.CopySelection() == "two",
+              "line selection returned unexpected text");
+
+        TerminalCore unicode_selection_core(nullptr);
+        Check(unicode_selection_core.Resize(20, 3),
+              "unicode selection core resize failed");
+        unicode_selection_core.FeedOutput("caf\xc3\xa9", 5);
+        unicode_selection_core.SelectWord(3, 0);
+        Check(unicode_selection_core.CopySelection() == "caf\xC3\xA9",
+              "Unicode word selection returned unexpected text");
+
         std::cout << "terminal_core: PASS\n";
         return 0;
     } catch (const std::exception& error) {

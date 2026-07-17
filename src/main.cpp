@@ -41,6 +41,7 @@ public:
         Bind(wxEVT_CHAR, &TerminalPanel::OnChar, this);
         Bind(wxEVT_MOUSEWHEEL, &TerminalPanel::OnMouseWheel, this);
         Bind(wxEVT_LEFT_DOWN, &TerminalPanel::OnLeftDown, this);
+        Bind(wxEVT_LEFT_DCLICK, &TerminalPanel::OnLeftDown, this);
         Bind(wxEVT_LEFT_UP, &TerminalPanel::OnLeftUp, this);
         Bind(wxEVT_MOTION, &TerminalPanel::OnMotion, this);
         Bind(wxEVT_TIMER, &TerminalPanel::OnTimer, this);
@@ -250,27 +251,63 @@ private:
     {
         SetFocus();
         const auto [column, row] = CellAt(event.GetPosition());
-        core_.StartSelection(column, row);
-        selection_dragging_ = true;
+        const auto now = std::chrono::steady_clock::now();
+        const bool same_cell = column == last_click_column_ &&
+                               row == last_click_row_;
+        const bool quick_click = now - last_click_time_ <
+                                 std::chrono::milliseconds(500);
+        if (event.GetClickCount() >= 2 || (same_cell && quick_click))
+            click_count_ = click_count_ % 3 + 1;
+        else
+            click_count_ = 1;
+        last_click_time_ = now;
+        last_click_column_ = column;
+        last_click_row_ = row;
+
+        core_.ClearSelection();
+        if (click_count_ == 2)
+            core_.SelectWord(column, row);
+        else if (click_count_ == 3)
+            core_.SelectLine(row);
+
+        pointer_down_ = true;
+        selection_dragging_ = false;
+        pointer_down_position_ = event.GetPosition();
+        selection_anchor_column_ = column;
+        selection_anchor_row_ = row;
         CaptureMouse();
         Refresh(false);
     }
 
     void OnLeftUp(wxMouseEvent& event)
     {
-        if (!selection_dragging_)
+        if (!pointer_down_)
             return;
         const auto [column, row] = CellAt(event.GetPosition());
-        core_.UpdateSelection(column, row);
+        const bool should_copy = selection_dragging_ || click_count_ >= 2;
+        if (selection_dragging_)
+            core_.UpdateSelection(column, row);
         selection_dragging_ = false;
+        pointer_down_ = false;
         if (HasCapture())
             ReleaseMouse();
+        if (should_copy)
+            CopySelectionToClipboard();
         Refresh(false);
     }
 
     void OnMotion(wxMouseEvent& event)
     {
-        if (!selection_dragging_ || !event.Dragging())
+        if (!pointer_down_ || !event.Dragging())
+            return;
+        const wxPoint position = event.GetPosition();
+        const int distance_x = std::abs(position.x - pointer_down_position_.x);
+        const int distance_y = std::abs(position.y - pointer_down_position_.y);
+        if (!selection_dragging_ && (distance_x >= 4 || distance_y >= 4)) {
+            core_.StartSelection(selection_anchor_column_, selection_anchor_row_);
+            selection_dragging_ = true;
+        }
+        if (!selection_dragging_)
             return;
         const auto [column, row] = CellAt(event.GetPosition());
         core_.UpdateSelection(column, row);
@@ -408,6 +445,10 @@ public:
         OnLeftDown(down);
         wxMouseEvent up(wxEVT_LEFT_UP);
         up.SetPosition(wxPoint(7 * cell_width_ + 1, 1));
+        wxMouseEvent motion(wxEVT_MOTION);
+        motion.SetLeftDown(true);
+        motion.SetPosition(up.GetPosition());
+        OnMotion(motion);
         OnLeftUp(up);
         if (core_.CopySelection().find("scenario") == std::string::npos)
             return false;
@@ -471,7 +512,15 @@ private:
     unsigned int columns_ = 80;
     unsigned int rows_ = 24;
     bool selection_dragging_ = false;
+    bool pointer_down_ = false;
     bool trace_metrics_ = false;
+    int click_count_ = 0;
+    wxPoint pointer_down_position_;
+    unsigned int selection_anchor_column_ = 0;
+    unsigned int selection_anchor_row_ = 0;
+    unsigned int last_click_column_ = 0;
+    unsigned int last_click_row_ = 0;
+    std::chrono::steady_clock::time_point last_click_time_;
     TransportState last_transport_state_ = TransportState::Stopped;
     std::chrono::steady_clock::time_point last_metrics_log_;
 };

@@ -62,6 +62,8 @@ public:
 
     void StartSelection(unsigned int column, unsigned int row);
     void UpdateSelection(unsigned int column, unsigned int row);
+    void SelectWord(unsigned int column, unsigned int row);
+    void SelectLine(unsigned int row);
     void ClearSelection();
     bool HasSelection() const { return selection_active_; }
     std::string CopySelection();
