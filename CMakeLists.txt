@@ -62,13 +62,22 @@ target_include_directories(sakura_terminal_core PUBLIC src)
 target_link_libraries(sakura_terminal_core PUBLIC sakura_libtsm)
 
 add_library(sakura_transport STATIC
+    src/conpty_session.cpp
     src/pty_session.cpp
+    src/transport_factory.cpp
 )
 target_include_directories(sakura_transport PUBLIC src)
 target_link_libraries(sakura_transport PUBLIC Threads::Threads)
 
 if(UNIX)
     target_compile_definitions(sakura_transport PRIVATE SAKURA_WX_POSIX=1)
+endif()
+
+if(WIN32)
+    target_compile_definitions(sakura_transport PRIVATE
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+    )
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -119,6 +128,13 @@ if(BUILD_TESTING)
     target_link_libraries(sakura_terminal_core_test PRIVATE sakura_terminal_core)
     add_test(NAME terminal_core COMMAND sakura_terminal_core_test)
 
+    add_executable(sakura_transport_smoke_test
+        tests/transport_smoke_test.cpp
+    )
+    target_link_libraries(sakura_transport_smoke_test PRIVATE sakura_transport)
+    add_test(NAME transport_smoke COMMAND sakura_transport_smoke_test)
+    set_tests_properties(transport_smoke PROPERTIES TIMEOUT 15)
+
     if(UNIX)
         add_executable(sakura_pty_stress_test
             tests/pty_stress_test.cpp
@@ -139,6 +155,14 @@ if(BUILD_TESTING)
             TIMEOUT 10
             ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
         )
+        add_test(NAME wx_ux_scenario
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/wx_smoke_test.sh"
+                    "$<TARGET_FILE:sakura-wx-prototype>"
+        )
+        set_tests_properties(wx_ux_scenario PROPERTIES
+            TIMEOUT 10
+            ENVIRONMENT "SAKURA_WX_SMOKE_TEST=1;SAKURA_WX_SCENARIO_TEST=1;ASAN_OPTIONS=detect_leaks=0"
+        )
     endif()
 
     if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
@@ -146,5 +170,6 @@ if(BUILD_TESTING)
         if(TARGET sakura_pty_stress_test)
             sakura_enable_sanitizers(sakura_pty_stress_test)
         endif()
+        sakura_enable_sanitizers(sakura_transport_smoke_test)
     endif()
 endif()

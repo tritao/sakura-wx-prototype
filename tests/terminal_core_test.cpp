@@ -81,6 +81,28 @@ int main()
         Check(CellAt(unicode_snapshot, 3, 0).codepoint == 0xE9,
               "split UTF-8 input was not reconstructed correctly");
 
+        std::string paste_writes;
+        TerminalCore selection_core([&paste_writes](const char* data,
+                                                     std::size_t length) {
+            paste_writes.append(data, length);
+        });
+        Check(selection_core.Resize(20, 4), "selection core resize failed");
+        selection_core.FeedOutput("select me", 9);
+        selection_core.TakeSnapshot();
+        selection_core.StartSelection(0, 0);
+        selection_core.UpdateSelection(8, 0);
+        const std::string copied = selection_core.CopySelection();
+        Check(copied == "select me", "selection copy returned unexpected text");
+        selection_core.Paste("pasted");
+        Check(paste_writes == "pasted", "paste was not sent to the transport");
+        const TerminalMetrics metrics = selection_core.GetMetrics();
+        Check(metrics.output_bytes == 9 && metrics.output_chunks == 1,
+              "output metrics were not recorded");
+        Check(metrics.render_latency_samples >= 1,
+              "render latency was not recorded");
+        Check(metrics.selection_copies == 1 && metrics.paste_bytes == 6,
+              "selection metrics were not recorded");
+
         std::cout << "terminal_core: PASS\n";
         return 0;
     } catch (const std::exception& error) {

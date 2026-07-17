@@ -6,10 +6,14 @@ The prototype currently provides:
 
 - wxWidgets window and custom terminal-cell drawing;
 - libtsm VT parsing, colors, cursor, scrollback, keyboard handling, and palette;
-- a POSIX `forkpty()` process bridge with shell resize and output polling;
+- mouse drag selection, clipboard copy/paste, and core/transport telemetry;
+- a POSIX `forkpty()` process bridge, including macOS, with shell resize and output polling;
+- a Windows ConPTY process bridge selected automatically by the transport factory;
 - pinned source submodules for wxWidgets and libtsm.
 
-The process bridge is POSIX-only in this first slice. Windows ConPTY and a native macOS process backend are explicit follow-up work, so the wx/libtsm rendering layer can be evaluated independently of that platform plumbing.
+The transport interface keeps the wx/libtsm rendering layer independent of the
+platform process plumbing. Native Windows validation is covered by CI; the
+local Linux path exercises the POSIX backend directly.
 
 ## Get the source
 
@@ -56,7 +60,7 @@ Set `RUN_TESTS=1` to build and run the test suite as part of the build.
 
 ## Testing
 
-Configure and run the deterministic core, PTY stress, and Linux wx smoke tests:
+Configure and run the deterministic core, transport, PTY stress, and Linux wx tests:
 
 ```sh
 RUN_TESTS=1 ./build.sh
@@ -70,14 +74,20 @@ BUILD_DIR=build-sanitize SAKURA_ENABLE_SANITIZERS=ON RUN_TESTS=1 ./build.sh
 
 The core tests use semantic screen snapshots, while the PTY test exercises burst output, repeated resize, child completion, and shutdown. The wx smoke test runs the real window under Xvfb when available.
 
+Set `SAKURA_TRACE_METRICS=1` when running the app to print periodic output,
+input, rendering latency, clipboard, transport queue, and resize counters:
+
+```sh
+SAKURA_TRACE_METRICS=1 ./run.sh
+```
+
 wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidgets CMake/MSVC toolchain; on macOS, use Xcode command-line tools and CMake.
 
-## Next plan
+## Follow-up work
 
-1. Finish the POSIX slice with clipboard selection, copy/paste, mouse reporting, and child-exit handling.
-2. Extract the renderer and terminal session behind interfaces so the wx frontend does not depend on `forkpty()`.
-3. Add a Windows ConPTY backend and verify the same libtsm screen/input contract.
-4. Add a macOS PTY backend, automated VT/parser tests, and a small benchmark against the existing GTK/VTE path.
-5. Decide whether libtsm remains the prototype engine or is replaced behind the interface by libghostty-vt for the production branch.
+1. Add explicit child-exit state and reconnect/close UX.
+2. Expand semantic VT cases and scripted mouse/keyboard latency thresholds.
+3. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
+4. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
 
 The vendored third-party code remains under its upstream licenses. See `third_party/libtsm/COPYING` and `third_party/wxWidgets/docs/licence.txt`.

@@ -1,17 +1,22 @@
-#include "pty_session.h"
 #include "terminal_core.h"
+#include "transport_factory.h"
 
+#include <wx/clipbrd.h>
+#include <wx/dataobj.h>
 #include <wx/dcbuffer.h>
 #include <wx/font.h>
 #include <wx/wx.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <tsm/libtsm.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -23,7 +28,7 @@ public:
     explicit TerminalPanel(wxWindow* parent)
         : wxPanel(parent),
           output_timer_(this),
-          transport_(std::make_unique<PosixPtySession>()),
+          transport_(CreateTerminalTransport()),
           core_([this](const char* data, std::size_t length) {
               transport_->Write(data, length);
           })
@@ -35,6 +40,9 @@ public:
         Bind(wxEVT_SIZE, &TerminalPanel::OnSize, this);
         Bind(wxEVT_CHAR, &TerminalPanel::OnChar, this);
         Bind(wxEVT_MOUSEWHEEL, &TerminalPanel::OnMouseWheel, this);
+        Bind(wxEVT_LEFT_DOWN, &TerminalPanel::OnLeftDown, this);
+        Bind(wxEVT_LEFT_UP, &TerminalPanel::OnLeftUp, this);
+        Bind(wxEVT_MOTION, &TerminalPanel::OnMotion, this);
         Bind(wxEVT_TIMER, &TerminalPanel::OnTimer, this);
 
         font_ = wxFont(12, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
@@ -48,14 +56,15 @@ public:
         UpdateGeometry();
         const char* shell = std::getenv("SHELL");
         if (!transport_->Start(columns_, rows_, shell == nullptr ? "" : shell)) {
-            error_ = "No POSIX PTY backend is available on this platform";
+            error_ = "No platform terminal transport is available";
             const char* notice =
                 "\x1b[1;33mSakura wx prototype\x1b[0m\r\n"
-                "This build has libtsm and wxWidgets, but its first process "
-                "backend is POSIX-only.\r\n"
-                "Windows ConPTY support is the next platform milestone.\r\n";
+                "This build has libtsm and wxWidgets, but could not start "
+                "the platform process backend.\r\n";
             core_.FeedOutput(notice, std::strlen(notice));
         }
+        trace_metrics_ = std::getenv("SAKURA_TRACE_METRICS") != nullptr;
+        last_metrics_log_ = std::chrono::steady_clock::now();
         output_timer_.Start(16);
     }
 
@@ -176,13 +185,29 @@ private:
 
     void OnChar(wxKeyEvent& event)
     {
+        const uint32_t key = static_cast<uint32_t>(event.GetKeyCode());
+        const uint32_t unicode = event.GetUnicodeKey();
+        const bool copy_key = key == 'c' || key == 'C' || unicode == 'c' ||
+                              unicode == 'C' || key == 3;
+        const bool paste_key = key == 'v' || key == 'V' || unicode == 'v' ||
+                               unicode == 'V' || key == 22;
+        if ((event.ControlDown() || event.MetaDown()) && event.ShiftDown()) {
+            if (copy_key) {
+                CopySelectionToClipboard();
+                return;
+            }
+            if (paste_key) {
+                PasteFromClipboard();
+                return;
+            }
+        }
+
         unsigned int modifiers = 0;
         if (event.ShiftDown()) modifiers |= TSM_SHIFT_MASK;
         if (event.ControlDown()) modifiers |= TSM_CONTROL_MASK;
         if (event.AltDown()) modifiers |= TSM_ALT_MASK;
         if (event.MetaDown()) modifiers |= TSM_LOGO_MASK;
 
-        const uint32_t unicode = event.GetUnicodeKey();
         const uint32_t ascii = unicode <= 0x7f ? unicode : TSM_VTE_INVALID;
         if (core_.HandleKey(KeySymFor(event), ascii, modifiers, unicode)) {
             Refresh(false);
@@ -200,6 +225,104 @@ private:
         Refresh(false);
     }
 
+    std::pair<unsigned int, unsigned int> CellAt(const wxPoint& point) const
+    {
+        const int column = std::max(0, point.x) / std::max(1, cell_width_);
+        const int row = std::max(0, point.y) / std::max(1, cell_height_);
+        return {
+            std::min(static_cast<unsigned int>(column), columns_ - 1),
+            std::min(static_cast<unsigned int>(row), rows_ - 1),
+        };
+    }
+
+    void OnLeftDown(wxMouseEvent& event)
+    {
+        SetFocus();
+        const auto [column, row] = CellAt(event.GetPosition());
+        core_.StartSelection(column, row);
+        selection_dragging_ = true;
+        CaptureMouse();
+        Refresh(false);
+    }
+
+    void OnLeftUp(wxMouseEvent& event)
+    {
+        if (!selection_dragging_)
+            return;
+        const auto [column, row] = CellAt(event.GetPosition());
+        core_.UpdateSelection(column, row);
+        selection_dragging_ = false;
+        if (HasCapture())
+            ReleaseMouse();
+        Refresh(false);
+    }
+
+    void OnMotion(wxMouseEvent& event)
+    {
+        if (!selection_dragging_ || !event.Dragging())
+            return;
+        const auto [column, row] = CellAt(event.GetPosition());
+        core_.UpdateSelection(column, row);
+        Refresh(false);
+    }
+
+    bool CopySelectionToClipboard()
+    {
+        const std::string text = core_.CopySelection();
+        if (text.empty() || wxTheClipboard == nullptr || !wxTheClipboard->Open())
+            return false;
+        const bool copied = wxTheClipboard->SetData(
+            new wxTextDataObject(wxString::FromUTF8(text)));
+        wxTheClipboard->Close();
+        return copied;
+    }
+
+    bool PasteFromClipboard()
+    {
+        if (wxTheClipboard == nullptr || !wxTheClipboard->Open())
+            return false;
+        wxTextDataObject data;
+        const bool available = wxTheClipboard->GetData(data);
+        wxTheClipboard->Close();
+        if (!available)
+            return false;
+
+        const wxString text = data.GetText();
+        const auto utf8 = text.ToUTF8();
+        if (utf8.data() == nullptr)
+            return false;
+        core_.Paste(std::string(utf8.data(), utf8.length()));
+        Refresh(false);
+        return true;
+    }
+
+public:
+    bool RunScenario()
+    {
+        if (!core_.IsReady())
+            return false;
+
+        const char* text = "\x1b[2J\x1b[Hscenario";
+        core_.FeedOutput(text, std::strlen(text));
+        wxMouseEvent down(wxEVT_LEFT_DOWN);
+        down.SetPosition(wxPoint(1, 1));
+        OnLeftDown(down);
+        wxMouseEvent up(wxEVT_LEFT_UP);
+        up.SetPosition(wxPoint(7 * cell_width_ + 1, 1));
+        OnLeftUp(up);
+        if (core_.CopySelection().find("scenario") == std::string::npos)
+            return false;
+        if (!CopySelectionToClipboard())
+            return false;
+        if (!PasteFromClipboard())
+            return false;
+
+        const TerminalMetrics metrics = core_.GetMetrics();
+        return metrics.selection_copies >= 2 && metrics.paste_bytes >= 8;
+    }
+
+private:
+
     void OnTimer(wxTimerEvent&)
     {
         const auto output = transport_->TakeOutput();
@@ -207,6 +330,35 @@ private:
             core_.FeedOutput(chunk.data(), chunk.size());
         if (!output.empty())
             Refresh(false);
+
+        if (trace_metrics_) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_metrics_log_ >= std::chrono::seconds(1)) {
+                const TerminalMetrics core_metrics = core_.GetMetrics();
+                const TransportMetrics transport_metrics = transport_->GetMetrics();
+                std::fprintf(stderr,
+                             "[metrics] output=%lluB/%llu chunks input=%llu "
+                             "writes=%lluB/%llu renders=%llu selection=%llu "
+                             "latency-max=%lluus/%llu paste=%lluB "
+                             "transport-read=%lluB/%llu "
+                             "queue-high-water=%llu resize=%llu\n",
+                             static_cast<unsigned long long>(core_metrics.output_bytes),
+                             static_cast<unsigned long long>(core_metrics.output_chunks),
+                             static_cast<unsigned long long>(core_metrics.input_events),
+                             static_cast<unsigned long long>(core_metrics.transport_write_bytes),
+                             static_cast<unsigned long long>(core_metrics.transport_write_events),
+                             static_cast<unsigned long long>(core_metrics.rendered_frames),
+                             static_cast<unsigned long long>(core_metrics.selection_copies),
+                             static_cast<unsigned long long>(core_metrics.max_render_latency_us),
+                             static_cast<unsigned long long>(core_metrics.render_latency_samples),
+                             static_cast<unsigned long long>(core_metrics.paste_bytes),
+                             static_cast<unsigned long long>(transport_metrics.bytes_read),
+                             static_cast<unsigned long long>(transport_metrics.read_events),
+                             static_cast<unsigned long long>(transport_metrics.max_queued_bytes),
+                             static_cast<unsigned long long>(transport_metrics.resize_events));
+                last_metrics_log_ = now;
+            }
+        }
     }
 
     wxFont font_;
@@ -218,6 +370,9 @@ private:
     int cell_height_ = 16;
     unsigned int columns_ = 80;
     unsigned int rows_ = 24;
+    bool selection_dragging_ = false;
+    bool trace_metrics_ = false;
+    std::chrono::steady_clock::time_point last_metrics_log_;
 };
 
 class SakuraWxApp final : public wxApp {
@@ -239,6 +394,10 @@ public:
         frame->Show();
         panel->SetFocus();
 
+        if (std::getenv("SAKURA_WX_SCENARIO_TEST") != nullptr &&
+            !panel->RunScenario()) {
+            return false;
+        }
         if (std::getenv("SAKURA_WX_SMOKE_TEST") != nullptr)
             smoke_timer_.StartOnce(300);
         return true;

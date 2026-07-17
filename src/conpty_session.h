@@ -1,35 +1,34 @@
 #pragma once
 
+#include "terminal_transport.h"
+
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include "terminal_transport.h"
-
-class PosixPtySession final : public TerminalTransport {
+class ConPtySession final : public TerminalTransport {
 public:
-    PosixPtySession() = default;
-    ~PosixPtySession() override;
+    ConPtySession() = default;
+    ~ConPtySession() override;
 
-    PosixPtySession(const PosixPtySession&) = delete;
-    PosixPtySession& operator=(const PosixPtySession&) = delete;
+    ConPtySession(const ConPtySession&) = delete;
+    ConPtySession& operator=(const ConPtySession&) = delete;
 
     bool Start(unsigned int columns, unsigned int rows,
                const std::string& shell = {}) override;
     void Stop() override;
-
     bool Write(const char* data, std::size_t length) override;
     bool Resize(unsigned int columns, unsigned int rows) override;
-
     std::vector<std::string> TakeOutput() override;
     bool IsRunning() const override { return running_.load(); }
     TransportMetrics GetMetrics() const override;
 
 private:
-    void ReadLoop(int fd);
+    void ReadLoop(void* output_handle);
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};
@@ -44,6 +43,8 @@ private:
     std::mutex output_mutex_;
     std::deque<std::string> output_;
     std::thread reader_thread_;
-    int master_fd_ = -1;
-    int child_pid_ = -1;
+    void* input_write_ = nullptr;
+    void* output_read_ = nullptr;
+    void* pseudo_console_ = nullptr;
+    void* process_handle_ = nullptr;
 };

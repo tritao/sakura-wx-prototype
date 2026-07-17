@@ -19,6 +19,18 @@
 #include <pty.h>
 #endif
 
+namespace {
+
+void RecordMaximum(std::atomic<uint64_t>& maximum, uint64_t value)
+{
+    uint64_t current = maximum.load();
+    while (current < value &&
+           !maximum.compare_exchange_weak(current, value)) {
+    }
+}
+
+} // namespace
+
 #endif
 
 PosixPtySession::~PosixPtySession()
@@ -131,6 +143,8 @@ bool PosixPtySession::Write(const char* data, std::size_t length)
             continue;
         return false;
     }
+    bytes_written_ += length;
+    ++write_events_;
     return true;
 #else
     (void)data;
@@ -149,7 +163,10 @@ bool PosixPtySession::Resize(unsigned int columns, unsigned int rows)
     struct winsize size {};
     size.ws_col = static_cast<unsigned short>(columns);
     size.ws_row = static_cast<unsigned short>(rows);
-    return ::ioctl(master_fd_, TIOCSWINSZ, &size) == 0;
+    const bool resized = ::ioctl(master_fd_, TIOCSWINSZ, &size) == 0;
+    if (resized)
+        ++resize_events_;
+    return resized;
 #else
     (void)columns;
     (void)rows;
@@ -164,7 +181,23 @@ std::vector<std::string> PosixPtySession::TakeOutput()
         std::lock_guard lock(output_mutex_);
         pending.swap(output_);
     }
+    uint64_t bytes = 0;
+    for (const auto& chunk : pending)
+        bytes += chunk.size();
+    queued_bytes_.fetch_sub(bytes);
     return std::vector<std::string>(pending.begin(), pending.end());
+}
+
+TransportMetrics PosixPtySession::GetMetrics() const
+{
+    return {
+        bytes_read_.load(),
+        read_events_.load(),
+        bytes_written_.load(),
+        write_events_.load(),
+        resize_events_.load(),
+        max_queued_bytes_.load(),
+    };
 }
 
 void PosixPtySession::ReadLoop(int fd)
@@ -188,6 +221,11 @@ void PosixPtySession::ReadLoop(int fd)
         if (received > 0) {
             std::lock_guard lock(output_mutex_);
             output_.emplace_back(buffer, static_cast<std::size_t>(received));
+            bytes_read_ += static_cast<uint64_t>(received);
+            ++read_events_;
+            const uint64_t queued = queued_bytes_.fetch_add(
+                static_cast<uint64_t>(received)) + static_cast<uint64_t>(received);
+            RecordMaximum(max_queued_bytes_, queued);
             continue;
         }
         if (received < 0 && errno == EINTR)
