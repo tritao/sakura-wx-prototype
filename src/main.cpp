@@ -26,7 +26,7 @@ public:
 
         Bind(wxEVT_PAINT, &TerminalPanel::OnPaint, this);
         Bind(wxEVT_SIZE, &TerminalPanel::OnSize, this);
-        Bind(wxEVT_KEY_DOWN, &TerminalPanel::OnKeyDown, this);
+        Bind(wxEVT_CHAR, &TerminalPanel::OnChar, this);
         Bind(wxEVT_MOUSEWHEEL, &TerminalPanel::OnMouseWheel, this);
         Bind(wxEVT_TIMER, &TerminalPanel::OnTimer, this);
 
@@ -189,7 +189,7 @@ private:
         event.Skip();
     }
 
-    void OnKeyDown(wxKeyEvent& event)
+    void OnChar(wxKeyEvent& event)
     {
         if (vte_ == nullptr) {
             event.Skip();
