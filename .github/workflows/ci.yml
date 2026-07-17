@@ -60,6 +60,14 @@ jobs:
             Get-Content $log | Add-Content -Path $env:GITHUB_STEP_SUMMARY
           }
 
+      - name: Upload native transport diagnostics
+        if: runner.os == 'Windows' && failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-transport-diagnostics
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+
       - name: Verify native transport coverage
         if: runner.os == 'macOS' || runner.os == 'Windows'
         run: >-
