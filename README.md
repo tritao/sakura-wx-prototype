@@ -16,8 +16,9 @@ The prototype currently provides:
 - pinned source submodules for wxWidgets and libtsm.
 
 The transport interface keeps the wx/libtsm rendering layer independent of the
-platform process plumbing. Native Windows validation is covered by CI; the
-local Linux path exercises the POSIX backend directly.
+platform process plumbing. The CI matrix builds and runs the transport smoke
+and lifecycle tests on Linux, macOS, and Windows; the local Linux path also
+exercises the POSIX backend directly.
 
 The reusable library targets are:
 
@@ -168,7 +169,7 @@ wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidget
 
 1. Define an explicit ABI/versioning policy for shared-library packaging.
 2. Expand combining-mark coverage into full grapheme-cluster and emoji ZWJ selection tests.
-3. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
+3. Use native CI failures to guide further ConPTY and macOS PTY coverage.
 4. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
 
 The vendored third-party code remains under its upstream licenses. See `third_party/libtsm/COPYING` and `third_party/wxWidgets/docs/licence.txt`.

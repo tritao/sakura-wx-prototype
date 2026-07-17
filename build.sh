@@ -29,7 +29,9 @@ if [[ "${RUN_TESTS:-0}" == "1" ]]; then
     cmake --build "${BUILD_DIR}" \
         --config "${BUILD_TYPE}" \
         --parallel "${PARALLEL}"
-    ctest --test-dir "${BUILD_DIR}" --output-on-failure
+    ctest --test-dir "${BUILD_DIR}" \
+        --build-config "${BUILD_TYPE}" \
+        --output-on-failure
 else
     cmake --build "${BUILD_DIR}" \
         --config "${BUILD_TYPE}" \

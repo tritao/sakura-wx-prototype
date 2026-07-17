@@ -8,6 +8,7 @@ jobs:
   build-and-test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -29,10 +30,17 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --config Debug --parallel
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --build-config Debug --output-on-failure
+
+      - name: Verify native transport coverage
+        if: runner.os == 'macOS' || runner.os == 'Windows'
+        run: >-
+          ctest --test-dir build --build-config Debug
+          --output-on-failure
+          -R "transport_smoke|transport_lifecycle"
 
   linux-sanitizers:
     name: ubuntu-latest / sanitizers
@@ -57,9 +65,9 @@ jobs:
           -DSAKURA_ENABLE_SANITIZERS=ON
 
       - name: Build
-        run: cmake --build build-sanitize --parallel
+        run: cmake --build build-sanitize --config Debug --parallel
 
       - name: Test
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: ctest --test-dir build-sanitize --output-on-failure
+        run: ctest --test-dir build-sanitize --build-config Debug --output-on-failure
