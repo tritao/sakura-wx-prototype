@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   build-and-test:
     name: ${{ matrix.os }}
@@ -53,14 +57,31 @@ jobs:
       - name: Report native transport diagnostics
         if: runner.os == 'Windows' && failure()
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $log = "build/Testing/Temporary/LastTest.log"
           if (Test-Path $log) {
             "### Native transport diagnostics" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
             $lines = Get-Content $log
             $lines | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-            foreach ($line in $lines | Where-Object { $_ -match "captured (bytes|output)" }) {
-              Write-Output "::error title=Native transport diagnostic::$line"
+            $summary = ($lines -join "`n")
+            $headers = @{
+              Authorization = "Bearer $env:GITHUB_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+            }
+            $checks = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/$env:GITHUB_SHA/check-runs"
+            $check = $checks.check_runs | Where-Object { $_.name -eq "windows-latest" } | Select-Object -First 1
+            if ($null -ne $check) {
+              $body = @{
+                output = @{
+                  title = "Native transport diagnostics"
+                  summary = $summary
+                  text = $summary
+                }
+              } | ConvertTo-Json -Depth 5
+              Invoke-RestMethod -Method Patch -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/check-runs/$($check.id)" -ContentType "application/json" -Body $body
             }
           }
 
