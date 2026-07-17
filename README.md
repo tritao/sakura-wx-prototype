@@ -31,6 +31,10 @@ process at all while driving `TerminalCore` directly. The bundled bridge is
 available through `CreateTerminalTransport()` in
 `<sakura/terminal/factory.h>`.
 
+The public terminal headers do not expose libtsm implementation types. Input
+and mouse constants are defined by Sakura's terminal API, while libtsm remains
+an implementation detail of the compiled core library.
+
 ## Get the source
 
 ```sh
@@ -124,7 +128,7 @@ wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidget
 
 ## Follow-up work
 
-1. Hide libtsm and wxWidgets implementation details behind a PIMPL/ABI-stable public API.
+1. Define an explicit ABI/versioning policy for shared-library packaging.
 2. Expand combining-mark coverage into full grapheme-cluster and emoji ZWJ selection tests.
 3. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
 4. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.

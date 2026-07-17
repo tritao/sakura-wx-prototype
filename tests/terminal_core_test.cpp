@@ -42,17 +42,17 @@ int main()
         Check(writes == "a", "lowercase input was changed before reaching the transport");
         writes.clear();
 
-        Check(core.HandleKey('A', 'A', TSM_SHIFT_MASK, 'A'),
+        Check(core.HandleKey('A', 'A', TerminalShift, 'A'),
               "uppercase input was not handled");
         Check(writes == "A", "uppercase input was changed before reaching the transport");
         writes.clear();
 
-        Check(core.HandleKey('c', 'c', TSM_CONTROL_MASK, 'c'),
+        Check(core.HandleKey('c', 'c', TerminalControl, 'c'),
               "control input was not handled");
         Check(writes == std::string(1, '\x03'), "control-C was encoded incorrectly");
         writes.clear();
 
-        Check(core.HandleKey(XKB_KEY_Up, XKB_KEY_NoSymbol, 0, TSM_VTE_INVALID),
+        Check(core.HandleKey(XKB_KEY_Up, XKB_KEY_NoSymbol, 0, TerminalInvalid),
               "arrow input was not handled");
         Check(writes == "\x1b[A", "arrow input was encoded incorrectly");
 
@@ -223,14 +223,14 @@ int main()
         mouse_core.FeedOutput(enable_mouse, std::strlen(enable_mouse));
         Check(mouse_core.MouseReportingEnabled(),
               "mouse reporting mode was not detected");
-        Check(mouse_core.HandleMouse(2, 3, 20, 30, TSM_MOUSE_BUTTON_LEFT,
-                                     TSM_MOUSE_EVENT_PRESSED,
-                                     TSM_MOUSE_MODIFIER_SHIFT),
+        Check(mouse_core.HandleMouse(2, 3, 20, 30, TerminalMouseLeft,
+                                     TerminalMousePressed,
+                                     TerminalMouseShift),
               "mouse press was not forwarded");
         Check(mouse_writes == "\x1b[<4;3;4M",
               "mouse press was encoded incorrectly");
-        Check(mouse_core.HandleMouse(2, 3, 20, 30, TSM_MOUSE_BUTTON_LEFT,
-                                     TSM_MOUSE_EVENT_RELEASED, 0),
+        Check(mouse_core.HandleMouse(2, 3, 20, 30, TerminalMouseLeft,
+                                     TerminalMouseReleased, 0),
               "mouse release was not forwarded");
         Check(mouse_writes == "\x1b[<4;3;4M\x1b[<0;3;4m",
               "mouse release was encoded incorrectly");

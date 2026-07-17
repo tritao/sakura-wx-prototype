@@ -5,8 +5,6 @@
 
 #include <wx/wx.h>
 
-#include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -17,8 +15,8 @@ public:
                             std::unique_ptr<TerminalTransport> transport = nullptr);
     ~WxTerminalCtrl() override;
 
-    TerminalCore& Core() { return core_; }
-    const TerminalCore& Core() const { return core_; }
+    TerminalCore& Core();
+    const TerminalCore& Core() const;
 
     // Deterministic interaction hook used by the UX smoke test and embedders.
     bool RunScenario();
@@ -51,29 +49,6 @@ private:
     void UpdateTransportStatus();
     void OnTimer(wxTimerEvent& event);
 
-    wxFont font_;
-    wxTimer output_timer_;
-    std::unique_ptr<TerminalTransport> transport_;
-    TerminalCore core_;
-    wxString error_;
-    int cell_width_ = 8;
-    int cell_height_ = 16;
-    unsigned int columns_ = 80;
-    unsigned int rows_ = 24;
-    bool selection_dragging_ = false;
-    bool pointer_down_ = false;
-    bool mouse_reporting_gesture_ = false;
-    bool trace_metrics_ = false;
-    int click_count_ = 0;
-    wxPoint pointer_down_position_;
-    unsigned int selection_anchor_column_ = 0;
-    unsigned int selection_anchor_row_ = 0;
-    unsigned int last_click_column_ = 0;
-    unsigned int last_click_row_ = 0;
-    unsigned int mouse_reporting_button_ = TSM_MOUSE_BUTTON_LEFT;
-    int auto_scroll_direction_ = 0;
-    wxPoint last_pointer_position_;
-    std::chrono::steady_clock::time_point last_click_time_;
-    TransportState last_transport_state_ = TransportState::Stopped;
-    std::chrono::steady_clock::time_point last_metrics_log_;
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };

@@ -1,19 +1,46 @@
 #pragma once
 
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
-
-#include <tsm/libtsm.h>
 
 enum class TerminalCursorStyle {
     Block,
     Underline,
     Bar,
+};
+
+enum TerminalKeyModifier : unsigned int {
+    TerminalShift = 1u << 0,
+    TerminalControl = 1u << 2,
+    TerminalAlt = 1u << 3,
+    TerminalLogo = 1u << 4,
+};
+
+constexpr uint32_t TerminalInvalid = 0xffffffffu;
+
+enum TerminalMouseButton : unsigned int {
+    TerminalMouseLeft = 0,
+    TerminalMouseMiddle = 1,
+    TerminalMouseRight = 2,
+    TerminalMouseWheelUp = 4,
+    TerminalMouseWheelDown = 5,
+};
+
+enum TerminalMouseModifier : unsigned char {
+    TerminalMouseShift = 4,
+    TerminalMouseMeta = 8,
+    TerminalMouseControl = 16,
+};
+
+enum TerminalMouseEvent : unsigned int {
+    TerminalMousePressed = 1,
+    TerminalMouseReleased = 2,
+    TerminalMouseMoved = 4,
 };
 
 struct TerminalCell {
@@ -63,10 +90,12 @@ public:
 
     TerminalCore(const TerminalCore&) = delete;
     TerminalCore& operator=(const TerminalCore&) = delete;
+    TerminalCore(TerminalCore&&) noexcept;
+    TerminalCore& operator=(TerminalCore&&) noexcept;
 
-    bool IsReady() const { return screen_ != nullptr && vte_ != nullptr; }
-    const std::string& Error() const { return error_; }
-    const std::string& Title() const { return title_; }
+    bool IsReady() const;
+    const std::string& Error() const;
+    const std::string& Title() const;
 
     bool Resize(unsigned int columns, unsigned int rows);
     void FeedOutput(const char* data, std::size_t length);
@@ -87,43 +116,13 @@ public:
     void SelectWord(unsigned int column, unsigned int row);
     void SelectLine(unsigned int row);
     void ClearSelection();
-    bool HasSelection() const { return selection_active_; }
+    bool HasSelection() const;
     std::string CopySelection();
 
     TerminalSnapshot TakeSnapshot();
-    TerminalMetrics GetMetrics() const { return metrics_; }
+    TerminalMetrics GetMetrics() const;
 
 private:
-    static void VteWrite(struct tsm_vte* vte, const char* data,
-                         std::size_t length, void* user_data);
-    static void VteMouse(struct tsm_vte* vte,
-                         enum tsm_mouse_track_mode track_mode,
-                         bool track_pixels, void* user_data);
-    static int DrawCell(struct tsm_screen* screen, uint64_t id,
-                        const uint32_t* codepoints, std::size_t length,
-                        unsigned int width, unsigned int column,
-                        unsigned int row, const struct tsm_screen_attr* attr,
-                        tsm_age_t age, void* user_data);
-    static void VteOsc(struct tsm_vte* vte, const char* data,
-                       std::size_t length, void* user_data);
-    void TrackCursorStyle(const char* data, std::size_t length);
-
-    enum class CursorSequenceState {
-        Ground,
-        Escape,
-        Csi,
-        CsiIntermediate,
-    } cursor_sequence_state_ = CursorSequenceState::Ground;
-    std::string cursor_sequence_parameters_;
-
-    WriteCallback write_callback_;
-    struct tsm_screen* screen_ = nullptr;
-    struct tsm_vte* vte_ = nullptr;
-    std::string error_;
-    std::string title_;
-    TerminalCursorStyle cursor_style_ = TerminalCursorStyle::Block;
-    bool selection_active_ = false;
-    TerminalMetrics metrics_;
-    std::chrono::steady_clock::time_point last_output_time_;
-    bool output_waiting_for_render_ = false;
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };

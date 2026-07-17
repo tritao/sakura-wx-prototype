@@ -167,8 +167,6 @@ install(TARGETS sakura_libtsm sakura_terminal_core sakura_transport
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(FILES "${LIBTSM_ROOT}/src/tsm/libtsm.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/tsm")
 install(EXPORT SakuraTerminalTargets
     FILE SakuraTerminalTargets.cmake
     NAMESPACE Sakura::
