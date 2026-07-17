@@ -103,11 +103,15 @@ int main()
         Check(frame_core.GetMetrics().frame_cells_reused > 20,
               "dirty frame did not retain unchanged cells");
         const char* frame_title = "\x1b]2;frame title\x07";
+        const uint64_t decoded_before_title =
+            frame_core.GetMetrics().frame_cells_decoded;
         frame_core.FeedOutput(frame_title, std::strlen(frame_title));
         const TerminalFrame title_frame = frame_core.TakeFrame();
         Check(title_frame.generation == changed_generation &&
                   !title_frame.changed && title_frame.dirty.IsEmpty(),
               "title-only output dirtied the screen frame");
+        Check(frame_core.GetMetrics().frame_cells_decoded == decoded_before_title,
+              "title-only output decoded terminal cells");
 
         TerminalCore retained_frame_core(nullptr);
         Check(retained_frame_core.Resize(8, 2),
@@ -196,6 +200,7 @@ int main()
 
         TerminalCore glyph_core(nullptr);
         Check(glyph_core.Resize(20, 3), "glyph core resize failed");
+        glyph_core.TakeFrame();
         const char* glyphs = "\xe7\x95\x8c" "e\xcc\x81";
         glyph_core.FeedOutput(glyphs, std::strlen(glyphs));
         const TerminalSnapshot glyph_snapshot = glyph_core.TakeSnapshot();

@@ -82,7 +82,6 @@ private:
         unsigned int cursor_x = 0;
         unsigned int cursor_y = 0;
         uint64_t* decoded_cells = nullptr;
-        uint64_t* reused_cells = nullptr;
     };
 
     static void IncludeDirty(TerminalDirtyRegion& dirty,
@@ -150,11 +149,8 @@ private:
              (column == context->cursor_x && row == context->cursor_y));
         const bool changed = context->full_repaint || age == 0 ||
             age > context->previous_age || cursor_cell;
-        if (!changed) {
-            if (context->reused_cells != nullptr)
-                ++*context->reused_cells;
+        if (!changed)
             return 0;
-        }
         if (context->decoded_cells != nullptr)
             ++*context->decoded_cells;
         IncludeDirty(*context->dirty, column, row, width,
@@ -326,9 +322,16 @@ private:
         context.cursor_x = snapshot.cursor_x;
         context.cursor_y = snapshot.cursor_y;
         context.decoded_cells = &metrics_.frame_cells_decoded;
-        context.reused_cells = &metrics_.frame_cells_reused;
-        const tsm_age_t age = tsm_screen_draw(screen_, &Impl::DrawCell,
-                                             &context);
+        const uint64_t decoded_before = metrics_.frame_cells_decoded;
+        const tsm_age_t since = frame.full_repaint ? 0 : last_draw_age_;
+        const tsm_age_t age = tsm_screen_draw_since(
+            screen_, since, &Impl::DrawCell, &context);
+        const uint64_t decoded_cells = metrics_.frame_cells_decoded -
+                                       decoded_before;
+        const uint64_t total_cells = static_cast<uint64_t>(snapshot.columns) *
+                                     snapshot.rows;
+        if (decoded_cells < total_cells)
+            metrics_.frame_cells_reused += total_cells - decoded_cells;
 
         if (context.cursor_changed) {
             IncludeCell(frame.dirty, last_cursor_x_, last_cursor_y_,
