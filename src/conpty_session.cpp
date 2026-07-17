@@ -108,9 +108,9 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
     };
     const HRESULT console_result = CreatePseudoConsole(
         size, input_read, output_write, 0, &pseudo_console);
-    CloseHandle(input_read);
-    CloseHandle(output_write);
     if (FAILED(console_result)) {
+        CloseHandle(input_read);
+        CloseHandle(output_write);
         CloseHandle(input_write);
         CloseHandle(output_read);
         state_.store(TransportState::Failed);
@@ -121,6 +121,8 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
     if (attribute_size == 0) {
         ClosePseudoConsole(pseudo_console);
+        CloseHandle(input_read);
+        CloseHandle(output_write);
         CloseHandle(input_write);
         CloseHandle(output_read);
         state_.store(TransportState::Failed);
@@ -131,6 +133,8 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         attribute_buffer.data());
     if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_size)) {
         ClosePseudoConsole(pseudo_console);
+        CloseHandle(input_read);
+        CloseHandle(output_write);
         CloseHandle(input_write);
         CloseHandle(output_read);
         state_.store(TransportState::Failed);
@@ -142,6 +146,8 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
                                    nullptr, nullptr)) {
         DeleteProcThreadAttributeList(attributes);
         ClosePseudoConsole(pseudo_console);
+        CloseHandle(input_read);
+        CloseHandle(output_write);
         CloseHandle(input_write);
         CloseHandle(output_read);
         state_.store(TransportState::Failed);
@@ -164,6 +170,8 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
         &startup_info.StartupInfo, &process_info);
     DeleteProcThreadAttributeList(attributes);
+    CloseHandle(input_read);
+    CloseHandle(output_write);
     if (process_info.hThread != nullptr)
         CloseHandle(process_info.hThread);
     if (!created) {
