@@ -33,12 +33,11 @@ jobs:
       - name: Configure Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          CC: clang
-          CXX: clang++
         run: >-
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=cl
+          -DCMAKE_CXX_COMPILER=cl
           -DBUILD_TESTING=ON
 
       - name: Configure Unix
