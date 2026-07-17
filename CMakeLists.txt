@@ -152,6 +152,21 @@ else()
 endif()
 
 option(SAKURA_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
+option(SAKURA_BUILD_BENCHMARKS "Build terminal rendering benchmarks" OFF)
+if(SAKURA_BUILD_BENCHMARKS)
+    add_executable(sakura-tsm-render-benchmark
+        benchmarks/tsm_render_benchmark.cpp
+    )
+    target_link_libraries(sakura-tsm-render-benchmark PRIVATE sakura_libtsm)
+    target_compile_features(sakura-tsm-render-benchmark PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(sakura-tsm-render-benchmark PRIVATE /W4)
+    else()
+        target_compile_options(sakura-tsm-render-benchmark PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endif()
+
 if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
     function(sakura_enable_sanitizers target)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined
