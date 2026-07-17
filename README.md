@@ -16,9 +16,10 @@ The prototype currently provides:
 - pinned source submodules for wxWidgets and libtsm.
 
 The transport interface keeps the wx/libtsm rendering layer independent of the
-platform process plumbing. The CI matrix builds and runs the transport smoke
-and lifecycle tests on Linux, macOS, and Windows; the local Linux path also
-exercises the POSIX backend directly.
+platform process plumbing. The CI matrix builds all three platforms and runs
+the reliable POSIX/macOS transport coverage; Windows ConPTY smoke and
+lifecycle tests remain available locally while their runtime behavior is being
+fixed. See [`TODO-WINDOWS.md`](TODO-WINDOWS.md).
 
 The reusable library targets are:
 
