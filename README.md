@@ -52,6 +52,23 @@ The same workflow is available through the convenience scripts:
 ```
 
 `BUILD_TYPE`, `BUILD_DIR`, and `JOBS` can be overridden as environment variables.
+Set `RUN_TESTS=1` to build and run the test suite as part of the build.
+
+## Testing
+
+Configure and run the deterministic core, PTY stress, and Linux wx smoke tests:
+
+```sh
+RUN_TESTS=1 ./build.sh
+```
+
+For an instrumented run with AddressSanitizer and UndefinedBehaviorSanitizer:
+
+```sh
+BUILD_DIR=build-sanitize SAKURA_ENABLE_SANITIZERS=ON RUN_TESTS=1 ./build.sh
+```
+
+The core tests use semantic screen snapshots, while the PTY test exercises burst output, repeated resize, child completion, and shutdown. The wx smoke test runs the real window under Xvfb when available.
 
 wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidgets CMake/MSVC toolchain; on macOS, use Xcode command-line tools and CMake.
 

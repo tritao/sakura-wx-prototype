@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
+include(CTest)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wxWidgets/CMakeLists.txt")
     message(FATAL_ERROR "wxWidgets submodule is missing. Run: git submodule update --init --recursive")
@@ -54,28 +55,96 @@ target_compile_definitions(sakura_libtsm PRIVATE
 )
 target_compile_features(sakura_libtsm PRIVATE c_std_99)
 
-add_executable(sakura-wx-prototype
-    src/main.cpp
+add_library(sakura_terminal_core STATIC
+    src/terminal_core.cpp
+)
+target_include_directories(sakura_terminal_core PUBLIC src)
+target_link_libraries(sakura_terminal_core PUBLIC sakura_libtsm)
+
+add_library(sakura_transport STATIC
     src/pty_session.cpp
 )
-target_include_directories(sakura-wx-prototype PRIVATE src)
-target_link_libraries(sakura-wx-prototype PRIVATE
-    wx::core
-    sakura_libtsm
-    Threads::Threads
-)
+target_include_directories(sakura_transport PUBLIC src)
+target_link_libraries(sakura_transport PUBLIC Threads::Threads)
 
 if(UNIX)
-    target_compile_definitions(sakura-wx-prototype PRIVATE SAKURA_WX_POSIX=1)
+    target_compile_definitions(sakura_transport PRIVATE SAKURA_WX_POSIX=1)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # forkpty() lives in libutil on Linux.
-    target_link_libraries(sakura-wx-prototype PRIVATE util)
+    target_link_libraries(sakura_transport PUBLIC util)
 endif()
+
+add_executable(sakura-wx-prototype
+    src/main.cpp
+)
+target_include_directories(sakura-wx-prototype PRIVATE
+    src
+    "${LIBTSM_ROOT}/external"
+)
+target_link_libraries(sakura-wx-prototype PRIVATE
+    wx::core
+    sakura_terminal_core
+    sakura_transport
+)
 
 if(MSVC)
     target_compile_options(sakura-wx-prototype PRIVATE /W4)
 else()
     target_compile_options(sakura-wx-prototype PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+option(SAKURA_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
+    function(sakura_enable_sanitizers target)
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined
+                                                  -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    endfunction()
+
+    sakura_enable_sanitizers(sakura_libtsm)
+    sakura_enable_sanitizers(sakura_terminal_core)
+    sakura_enable_sanitizers(sakura_transport)
+    sakura_enable_sanitizers(sakura-wx-prototype)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(sakura_terminal_core_test
+        tests/terminal_core_test.cpp
+    )
+    target_include_directories(sakura_terminal_core_test PRIVATE
+        "${LIBTSM_ROOT}/external"
+    )
+    target_link_libraries(sakura_terminal_core_test PRIVATE sakura_terminal_core)
+    add_test(NAME terminal_core COMMAND sakura_terminal_core_test)
+
+    if(UNIX)
+        add_executable(sakura_pty_stress_test
+            tests/pty_stress_test.cpp
+        )
+        target_link_libraries(sakura_pty_stress_test PRIVATE sakura_transport)
+        add_test(NAME pty_stress COMMAND sakura_pty_stress_test)
+        set_tests_properties(pty_stress PROPERTIES TIMEOUT 15)
+    endif()
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME wx_smoke
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/wx_smoke_test.sh"
+                    "$<TARGET_FILE:sakura-wx-prototype>"
+        )
+        # GTK/Pango/Fontconfig retain process-global caches during shutdown;
+        # the smoke test is for window construction and event-loop health.
+        set_tests_properties(wx_smoke PROPERTIES
+            TIMEOUT 10
+            ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
+        )
+    endif()
+
+    if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
+        sakura_enable_sanitizers(sakura_terminal_core_test)
+        if(TARGET sakura_pty_stress_test)
+            sakura_enable_sanitizers(sakura_pty_stress_test)
+        endif()
+    endif()
 endif()

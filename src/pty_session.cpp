@@ -21,12 +21,13 @@
 
 #endif
 
-PtySession::~PtySession()
+PosixPtySession::~PosixPtySession()
 {
     Stop();
 }
 
-bool PtySession::Start(unsigned int columns, unsigned int rows, const std::string& shell)
+bool PosixPtySession::Start(unsigned int columns, unsigned int rows,
+                            const std::string& shell)
 {
     Stop();
 
@@ -60,7 +61,7 @@ bool PtySession::Start(unsigned int columns, unsigned int rows, const std::strin
 
     stop_requested_.store(false);
     running_.store(true);
-    reader_thread_ = std::thread(&PtySession::ReadLoop, this, master);
+    reader_thread_ = std::thread(&PosixPtySession::ReadLoop, this, master);
     return true;
 #else
     (void)columns;
@@ -70,7 +71,7 @@ bool PtySession::Start(unsigned int columns, unsigned int rows, const std::strin
 #endif
 }
 
-void PtySession::Stop()
+void PosixPtySession::Stop()
 {
 #if defined(SAKURA_WX_POSIX)
     stop_requested_.store(true);
@@ -112,7 +113,7 @@ void PtySession::Stop()
     running_.store(false);
 }
 
-bool PtySession::Write(const char* data, std::size_t length)
+bool PosixPtySession::Write(const char* data, std::size_t length)
 {
 #if defined(SAKURA_WX_POSIX)
     std::lock_guard lock(io_mutex_);
@@ -138,7 +139,7 @@ bool PtySession::Write(const char* data, std::size_t length)
 #endif
 }
 
-bool PtySession::Resize(unsigned int columns, unsigned int rows)
+bool PosixPtySession::Resize(unsigned int columns, unsigned int rows)
 {
 #if defined(SAKURA_WX_POSIX)
     std::lock_guard lock(io_mutex_);
@@ -156,7 +157,7 @@ bool PtySession::Resize(unsigned int columns, unsigned int rows)
 #endif
 }
 
-std::vector<std::string> PtySession::TakeOutput()
+std::vector<std::string> PosixPtySession::TakeOutput()
 {
     std::deque<std::string> pending;
     {
@@ -166,7 +167,7 @@ std::vector<std::string> PtySession::TakeOutput()
     return std::vector<std::string>(pending.begin(), pending.end());
 }
 
-void PtySession::ReadLoop(int fd)
+void PosixPtySession::ReadLoop(int fd)
 {
 #if defined(SAKURA_WX_POSIX)
     char buffer[8192];

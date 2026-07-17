@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build}"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
+BUILD_TESTING_VALUE="${BUILD_TESTING:-ON}"
+SANITIZERS="${SAKURA_ENABLE_SANITIZERS:-OFF}"
 
 if [[ -n "${JOBS:-}" ]]; then
     PARALLEL="${JOBS}"
@@ -19,9 +21,18 @@ git -C "${ROOT_DIR}" submodule update --init --recursive
 
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DBUILD_TESTING="${BUILD_TESTING_VALUE}" \
+    -DSAKURA_ENABLE_SANITIZERS="${SANITIZERS}"
 
-cmake --build "${BUILD_DIR}" \
-    --config "${BUILD_TYPE}" \
-    --target sakura-wx-prototype \
-    --parallel "${PARALLEL}"
+if [[ "${RUN_TESTS:-0}" == "1" ]]; then
+    cmake --build "${BUILD_DIR}" \
+        --config "${BUILD_TYPE}" \
+        --parallel "${PARALLEL}"
+    ctest --test-dir "${BUILD_DIR}" --output-on-failure
+else
+    cmake --build "${BUILD_DIR}" \
+        --config "${BUILD_TYPE}" \
+        --target sakura-wx-prototype \
+        --parallel "${PARALLEL}"
+fi

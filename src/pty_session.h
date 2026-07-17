@@ -7,22 +7,25 @@
 #include <thread>
 #include <vector>
 
-class PtySession final {
+#include "terminal_transport.h"
+
+class PosixPtySession final : public TerminalTransport {
 public:
-    PtySession() = default;
-    ~PtySession();
+    PosixPtySession() = default;
+    ~PosixPtySession() override;
 
-    PtySession(const PtySession&) = delete;
-    PtySession& operator=(const PtySession&) = delete;
+    PosixPtySession(const PosixPtySession&) = delete;
+    PosixPtySession& operator=(const PosixPtySession&) = delete;
 
-    bool Start(unsigned int columns, unsigned int rows, const std::string& shell = {});
-    void Stop();
+    bool Start(unsigned int columns, unsigned int rows,
+               const std::string& shell = {}) override;
+    void Stop() override;
 
-    bool Write(const char* data, std::size_t length);
-    bool Resize(unsigned int columns, unsigned int rows);
+    bool Write(const char* data, std::size_t length) override;
+    bool Resize(unsigned int columns, unsigned int rows) override;
 
-    std::vector<std::string> TakeOutput();
-    bool IsRunning() const { return running_.load(); }
+    std::vector<std::string> TakeOutput() override;
+    bool IsRunning() const override { return running_.load(); }
 
 private:
     void ReadLoop(int fd);

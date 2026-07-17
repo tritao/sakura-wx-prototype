@@ -1,4 +1,5 @@
 #include "pty_session.h"
+#include "terminal_core.h"
 
 #include <wx/dcbuffer.h>
 #include <wx/font.h>
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include <tsm/libtsm.h>
@@ -19,7 +21,12 @@ namespace {
 class TerminalPanel final : public wxPanel {
 public:
     explicit TerminalPanel(wxWindow* parent)
-        : wxPanel(parent), output_timer_(this)
+        : wxPanel(parent),
+          output_timer_(this),
+          transport_(std::make_unique<PosixPtySession>()),
+          core_([this](const char* data, std::size_t length) {
+              transport_->Write(data, length);
+          })
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetFocus();
@@ -33,29 +40,21 @@ public:
         font_ = wxFont(12, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
                        wxFONTWEIGHT_NORMAL, false, "DejaVu Sans Mono");
 
-        if (tsm_screen_new(&screen_, nullptr, nullptr) != 0) {
-            error_ = "libtsm could not create a screen";
+        if (!core_.IsReady()) {
+            error_ = wxString::FromUTF8(core_.Error().c_str());
             return;
         }
-        tsm_screen_set_max_sb(screen_, 2000);
-
-        if (tsm_vte_new(&vte_, screen_, &TerminalPanel::VteWrite, this,
-                        nullptr, nullptr) != 0) {
-            error_ = "libtsm could not create a VTE";
-            return;
-        }
-        tsm_vte_set_palette(vte_, "base16-dark");
 
         UpdateGeometry();
         const char* shell = std::getenv("SHELL");
-        if (!pty_.Start(columns_, rows_, shell == nullptr ? "" : shell)) {
+        if (!transport_->Start(columns_, rows_, shell == nullptr ? "" : shell)) {
             error_ = "No POSIX PTY backend is available on this platform";
             const char* notice =
                 "\x1b[1;33mSakura wx prototype\x1b[0m\r\n"
                 "This build has libtsm and wxWidgets, but its first process "
                 "backend is POSIX-only.\r\n"
                 "Windows ConPTY support is the next platform milestone.\r\n";
-            tsm_vte_input(vte_, notice, std::strlen(notice));
+            core_.FeedOutput(notice, std::strlen(notice));
         }
         output_timer_.Start(16);
     }
@@ -63,20 +62,10 @@ public:
     ~TerminalPanel() override
     {
         output_timer_.Stop();
-        pty_.Stop();
-        if (vte_ != nullptr)
-            tsm_vte_unref(vte_);
-        if (screen_ != nullptr)
-            tsm_screen_unref(screen_);
+        transport_->Stop();
     }
 
 private:
-    static void VteWrite(struct tsm_vte*, const char* data, std::size_t length, void* user_data)
-    {
-        auto* self = static_cast<TerminalPanel*>(user_data);
-        self->pty_.Write(data, length);
-    }
-
     void UpdateGeometry()
     {
         wxClientDC dc(this);
@@ -95,9 +84,8 @@ private:
             return;
         columns_ = columns;
         rows_ = rows;
-        if (screen_ != nullptr)
-            tsm_screen_resize(screen_, columns_, rows_);
-        pty_.Resize(columns_, rows_);
+        core_.Resize(columns_, rows_);
+        transport_->Resize(columns_, rows_);
     }
 
     static wxString CellText(uint32_t codepoint)
@@ -143,41 +131,38 @@ private:
         dc.Clear();
         dc.SetFont(font_);
 
-        if (screen_ == nullptr) {
+        if (!core_.IsReady()) {
             dc.SetTextForeground(wxColour(240, 180, 90));
             dc.DrawText(error_, 12, 12);
             return;
         }
 
-        const unsigned int columns = tsm_screen_get_width(screen_);
-        const unsigned int rows = tsm_screen_get_height(screen_);
-        const struct tsm_screen_cell* cells = tsm_screen_draw2(screen_);
+        const TerminalSnapshot snapshot = core_.TakeSnapshot();
         dc.SetPen(*wxTRANSPARENT_PEN);
-
-        for (unsigned int row = 0; row < rows; ++row) {
-            for (unsigned int column = 0; column < columns; ++column) {
-                const auto& cell = cells[row * columns + column];
-                dc.SetBrush(wxBrush(wxColour(cell.bg.r, cell.bg.g, cell.bg.b)));
+        for (unsigned int row = 0; row < snapshot.rows; ++row) {
+            for (unsigned int column = 0; column < snapshot.columns; ++column) {
+                const auto& cell = snapshot.cells[row * snapshot.columns + column];
+                dc.SetBrush(wxBrush(wxColour(cell.background[0], cell.background[1],
+                                             cell.background[2])));
                 dc.DrawRectangle(column * cell_width_, row * cell_height_,
                                  cell_width_, cell_height_);
 
-                if (cell.ch == 0)
+                if (cell.codepoint == 0)
                     continue;
-                dc.SetTextForeground(wxColour(cell.fg.r, cell.fg.g, cell.fg.b));
-                const wxString glyph = CellText(cell.ch);
+                dc.SetTextForeground(wxColour(cell.foreground[0], cell.foreground[1],
+                                              cell.foreground[2]));
+                const wxString glyph = CellText(cell.codepoint);
                 if (!glyph.empty())
                     dc.DrawText(glyph, column * cell_width_, row * cell_height_);
             }
         }
 
-        const unsigned int cursor_x = tsm_screen_get_cursor_x(screen_);
-        const unsigned int cursor_y = tsm_screen_get_cursor_y(screen_);
-        if (vte_ != nullptr &&
-            (tsm_vte_get_flags(vte_) & TSM_VTE_FLAG_TEXT_CURSOR_MODE) != 0 &&
-            cursor_x < columns && cursor_y < rows) {
+        if (snapshot.cursor_visible && snapshot.cursor_x < snapshot.columns &&
+            snapshot.cursor_y < snapshot.rows) {
             dc.SetBrush(*wxTRANSPARENT_BRUSH);
             dc.SetPen(wxPen(wxColour(230, 230, 230), 1));
-            dc.DrawRectangle(cursor_x * cell_width_, cursor_y * cell_height_,
+            dc.DrawRectangle(snapshot.cursor_x * cell_width_,
+                             snapshot.cursor_y * cell_height_,
                              cell_width_, cell_height_);
         }
     }
@@ -191,11 +176,6 @@ private:
 
     void OnChar(wxKeyEvent& event)
     {
-        if (vte_ == nullptr) {
-            event.Skip();
-            return;
-        }
-
         unsigned int modifiers = 0;
         if (event.ShiftDown()) modifiers |= TSM_SHIFT_MASK;
         if (event.ControlDown()) modifiers |= TSM_CONTROL_MASK;
@@ -204,7 +184,7 @@ private:
 
         const uint32_t unicode = event.GetUnicodeKey();
         const uint32_t ascii = unicode <= 0x7f ? unicode : TSM_VTE_INVALID;
-        if (tsm_vte_handle_keyboard(vte_, KeySymFor(event), ascii, modifiers, unicode)) {
+        if (core_.HandleKey(KeySymFor(event), ascii, modifiers, unicode)) {
             Refresh(false);
             return;
         }
@@ -213,32 +193,26 @@ private:
 
     void OnMouseWheel(wxMouseEvent& event)
     {
-        if (screen_ != nullptr) {
-            const unsigned int pages = 3;
-            if (event.GetWheelRotation() > 0)
-                tsm_screen_sb_page_up(screen_, pages);
-            else if (event.GetWheelRotation() < 0)
-                tsm_screen_sb_page_down(screen_, pages);
-            Refresh(false);
-        }
+        if (event.GetWheelRotation() > 0)
+            core_.ScrollPageUp(3);
+        else if (event.GetWheelRotation() < 0)
+            core_.ScrollPageDown(3);
+        Refresh(false);
     }
 
     void OnTimer(wxTimerEvent&)
     {
-        if (vte_ == nullptr)
-            return;
-        const auto output = pty_.TakeOutput();
+        const auto output = transport_->TakeOutput();
         for (const auto& chunk : output)
-            tsm_vte_input(vte_, chunk.data(), chunk.size());
+            core_.FeedOutput(chunk.data(), chunk.size());
         if (!output.empty())
             Refresh(false);
     }
 
     wxFont font_;
     wxTimer output_timer_;
-    PtySession pty_;
-    struct tsm_screen* screen_ = nullptr;
-    struct tsm_vte* vte_ = nullptr;
+    std::unique_ptr<TerminalTransport> transport_;
+    TerminalCore core_;
     wxString error_;
     int cell_width_ = 8;
     int cell_height_ = 16;
@@ -248,6 +222,12 @@ private:
 
 class SakuraWxApp final : public wxApp {
 public:
+    SakuraWxApp()
+        : smoke_timer_(this)
+    {
+        Bind(wxEVT_TIMER, &SakuraWxApp::OnSmokeTimer, this, smoke_timer_.GetId());
+    }
+
     bool OnInit() override
     {
         auto* frame = new wxFrame(nullptr, wxID_ANY, "Sakura wx prototype — libtsm",
@@ -258,8 +238,19 @@ public:
         frame->SetSizer(sizer);
         frame->Show();
         panel->SetFocus();
+
+        if (std::getenv("SAKURA_WX_SMOKE_TEST") != nullptr)
+            smoke_timer_.StartOnce(300);
         return true;
     }
+
+private:
+    void OnSmokeTimer(wxTimerEvent&)
+    {
+        ExitMainLoop();
+    }
+
+    wxTimer smoke_timer_;
 };
 
 } // namespace
