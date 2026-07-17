@@ -71,6 +71,12 @@ target_include_directories(sakura_terminal_core
 )
 target_link_libraries(sakura_terminal_core PUBLIC sakura_libtsm)
 
+# The implementation is shared with the C++ convenience API, while this
+# interface target gives C consumers an explicit package target name.
+add_library(sakura_terminal_core_c INTERFACE)
+set_target_properties(sakura_terminal_core_c PROPERTIES EXPORT_NAME TerminalCoreC)
+target_link_libraries(sakura_terminal_core_c INTERFACE sakura_terminal_core)
+
 add_library(sakura_transport STATIC
     src/conpty_session.cpp
     src/pty_session.cpp
@@ -107,6 +113,7 @@ target_link_libraries(sakura_wx_terminal
 )
 
 add_library(Sakura::TerminalCore ALIAS sakura_terminal_core)
+add_library(Sakura::TerminalCoreC ALIAS sakura_terminal_core_c)
 add_library(Sakura::TerminalTransport ALIAS sakura_transport)
 add_library(Sakura::WxTerminal ALIAS sakura_wx_terminal)
 
@@ -195,7 +202,7 @@ if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
     sakura_enable_sanitizers(sakura-wx-prototype)
 endif()
 
-install(TARGETS sakura_libtsm sakura_terminal_core sakura_transport
+install(TARGETS sakura_libtsm sakura_terminal_core sakura_terminal_core_c sakura_transport
                 sakura_wx_terminal
     EXPORT SakuraTerminalTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -253,6 +260,20 @@ if(BUILD_TESTING)
         Sakura::TerminalTransport
     )
     add_test(NAME library_consumer COMMAND sakura_library_consumer_test)
+
+    add_executable(sakura_c_core_consumer_test
+        tests/c_core_consumer_test.c
+    )
+    set_target_properties(sakura_c_core_consumer_test PROPERTIES
+        LINKER_LANGUAGE CXX
+    )
+    target_include_directories(sakura_c_core_consumer_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    target_link_libraries(sakura_c_core_consumer_test PRIVATE
+        sakura_terminal_core
+    )
+    add_test(NAME c_core_consumer COMMAND sakura_c_core_consumer_test)
 
     add_executable(sakura_transport_smoke_test
         tests/transport_smoke_test.cpp

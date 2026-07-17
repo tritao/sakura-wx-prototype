@@ -76,12 +76,22 @@ struct TerminalDirtyRegion {
     }
 };
 
+struct TerminalDirtySpan {
+    // The right edge is exclusive.
+    unsigned int row = 0;
+    unsigned int left = 0;
+    unsigned int right = 0;
+};
+
 struct TerminalFrame {
     // A generation changes only when the rendered screen state changes.
     uint64_t generation = 0;
     bool changed = false;
     bool full_repaint = false;
     TerminalDirtyRegion dirty;
+    // Coalesced row-local changes. `dirty` remains as a convenient bounding
+    // region for existing renderers and compatibility consumers.
+    std::vector<TerminalDirtySpan> dirty_spans;
     // The snapshot is immutable to consumers. TerminalCore uses copy-on-write
     // only when an older frame is still retained by a caller.
     std::shared_ptr<const TerminalSnapshot> snapshot;

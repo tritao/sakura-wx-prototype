@@ -24,8 +24,18 @@ fixed. See [`TODO-WINDOWS.md`](TODO-WINDOWS.md).
 The reusable library targets are:
 
 - `Sakura::TerminalCore`: libtsm-backed terminal state, parsing, input, and selection;
+- `Sakura::TerminalCoreC`: the same core through the stable C ABI in
+  `<sakura/terminal/core_c.h>`;
 - `Sakura::TerminalTransport`: the platform process bridge;
 - `Sakura::WxTerminal`: the wxWidgets terminal control, rendering, input, and clipboard integration.
+
+The C ABI is the canonical integration boundary for non-C++ frontends. It
+uses opaque terminal and frame handles, explicit release functions, immutable
+frame views, cursor/mode metadata, and row-local dirty spans. The C++
+`TerminalCore` class remains a thin compatibility wrapper over that API.
+Native renderers can request cached UTF-8 row runs with packed style data via
+`sakura_terminal_frame_row_run_count()` and
+`sakura_terminal_frame_row_run()`; run text is borrowed from the frame.
 
 The wx control accepts an optional `TerminalTransport`, so applications can use
 the renderer with the bundled process bridge, a different backend, or no child

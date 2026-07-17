@@ -18,6 +18,21 @@ transport reader threads only move process output into a queue.
 - Move construction/assignment transfers the core to the destination object's
   current thread; the moved-from object must not be used.
 
+The public C ABI is defined in
+`include/sakura/terminal/core_c.h`. It is the toolkit-neutral boundary for
+frontends that cannot or should not depend on the C++ API. `SakuraTerminal`
+and `SakuraTerminalFrame` are opaque, caller-owned handles. A frame owns an
+immutable view of the rendered screen; cell text is borrowed from that frame
+and must not be retained after `sakura_terminal_frame_free()`.
+
+`SakuraTerminalFrameInfo` exposes the complete frame metadata and the frame
+also exposes coalesced row-local dirty spans. The existing C++ snapshot API is
+kept as a compatibility convenience for wxWidgets and tests, but forwards
+through the same C ABI boundary. Native frontends can request cached UTF-8
+row runs with packed style identifiers and resolved RGB attributes, avoiding
+per-cell language-boundary calls. Run text is borrowed until the frame is
+released.
+
 The core intentionally has no internal mutex. This keeps terminal parsing,
 selection, and snapshot generation deterministic and avoids presenting a false
 guarantee that libtsm itself is reentrant.
