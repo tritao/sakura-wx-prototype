@@ -96,6 +96,7 @@ target_include_directories(sakura_wx_terminal
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         ${SAKURA_WX_CORE_INCLUDES}
+        "${LIBTSM_ROOT}/external"
 )
 target_compile_definitions(sakura_wx_terminal PRIVATE ${SAKURA_WX_CORE_DEFINITIONS})
 target_link_libraries(sakura_wx_terminal
