@@ -129,6 +129,11 @@ endif()
 add_executable(sakura-wx-prototype
     src/main.cpp
 )
+if(WIN32)
+    set_target_properties(sakura-wx-prototype PROPERTIES
+        WIN32_EXECUTABLE TRUE
+    )
+endif()
 target_include_directories(sakura-wx-prototype PRIVATE
     src
     "${LIBTSM_ROOT}/external"
