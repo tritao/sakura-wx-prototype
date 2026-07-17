@@ -45,24 +45,27 @@ int main()
         auto transport = CreateTerminalTransport();
         Check(transport != nullptr, "transport factory returned null");
         Check(transport->Start(80, 24, ""), "transport failed to start");
+        std::string output;
 #if defined(_WIN32)
         const auto startup_deadline = std::chrono::steady_clock::now() +
                                       std::chrono::seconds(5);
-        while (std::chrono::steady_clock::now() < startup_deadline &&
-               transport->GetMetrics().read_events == 0) {
+        while (std::chrono::steady_clock::now() < startup_deadline) {
+            for (const auto& chunk : transport->TakeOutput())
+                output += chunk;
+            if (output.find('>') != std::string::npos)
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 #endif
 
 #if defined(_WIN32)
-        const std::string command = "echo transport-smoke\rexit\r";
+        const std::string command = "echo transport-smoke\r\nexit\r\n";
 #else
         const std::string command = "printf 'transport-smoke\\n'; exit\n";
 #endif
         Check(transport->Write(command.data(), command.size()),
               "transport failed to write command");
 
-        std::string output;
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::seconds(10);
         while (std::chrono::steady_clock::now() < deadline) {

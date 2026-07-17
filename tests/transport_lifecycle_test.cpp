@@ -36,6 +36,25 @@ std::string DrainOutput(TerminalTransport& transport)
     return output;
 }
 
+std::string WaitForReadyPrompt(TerminalTransport& transport)
+{
+    std::string output;
+#if defined(_WIN32)
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        for (const auto& chunk : transport.TakeOutput())
+            output += chunk;
+        if (output.find('>') != std::string::npos)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+#else
+    (void)transport;
+#endif
+    return output;
+}
+
 void PrintDiagnostics(const char* label, const std::string& output,
                       const TransportStatus& status,
                       const TransportMetrics& metrics)
@@ -83,9 +102,9 @@ int main()
 
 #if defined(_WIN32)
         const std::string old_command =
-            "echo sakura-old-session\rexit\r";
+            "echo sakura-old-session\r\nexit\r\n";
         const std::string new_command =
-            "echo sakura-new-session\rexit\r";
+            "echo sakura-new-session\r\nexit\r\n";
 #else
         const std::string old_command =
             "printf 'sakura-old-session\\n'; exit\n";
@@ -95,14 +114,7 @@ int main()
 
         Check(transport->Start(80, 24, ""),
               "could not start the first restart session");
-#if defined(_WIN32)
-        const auto first_startup_deadline = std::chrono::steady_clock::now() +
-                                            std::chrono::seconds(5);
-        while (std::chrono::steady_clock::now() < first_startup_deadline &&
-               transport->GetMetrics().read_events == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-#endif
+        WaitForReadyPrompt(*transport);
         Check(transport->Write(old_command.data(), old_command.size()),
               "could not write the first restart command");
         const TransportStatus old_status = WaitForTerminalState(*transport);
@@ -116,14 +128,7 @@ int main()
 
         Check(transport->Start(80, 24, ""),
               "could not restart the transport");
-#if defined(_WIN32)
-        const auto second_startup_deadline = std::chrono::steady_clock::now() +
-                                             std::chrono::seconds(5);
-        while (std::chrono::steady_clock::now() < second_startup_deadline &&
-               transport->GetMetrics().read_events == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-#endif
+        WaitForReadyPrompt(*transport);
         const std::string stale_output = DrainOutput(*transport);
         Check(stale_output.find("sakura-old-session") == std::string::npos,
               "restart exposed stale output from the previous session");
