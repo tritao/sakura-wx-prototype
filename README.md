@@ -31,6 +31,29 @@ process at all while driving `TerminalCore` directly. The bundled bridge is
 available through `CreateTerminalTransport()` in
 `<sakura/terminal/factory.h>`.
 
+Presentation and lifecycle behavior can be customized without subclassing the
+control:
+
+```cpp
+TerminalConfig config;
+config.font_size = 14;
+config.start_transport = true;
+
+TerminalCallbacks callbacks;
+callbacks.on_title_changed = [](const std::string& title) {
+    // Update the host window title.
+};
+callbacks.on_error = [](const std::string& message) {
+    // Surface the error in the host application.
+};
+
+auto* terminal = new WxTerminalCtrl(parent, CreateTerminalTransport(),
+                                    config, callbacks);
+```
+
+Callbacks also report transport state changes and periodic core/transport
+metrics.
+
 The public terminal headers do not expose libtsm implementation types. Input
 and mouse constants are defined by Sakura's terminal API, while libtsm remains
 an implementation detail of the compiled core library.

@@ -19,8 +19,11 @@
 
 class WxTerminalCtrl::Impl {
 public:
-    Impl(WxTerminalCtrl& owner, std::unique_ptr<TerminalTransport> transport)
+    Impl(WxTerminalCtrl& owner, std::unique_ptr<TerminalTransport> transport,
+         TerminalConfig config, TerminalCallbacks callbacks)
         : owner_(owner),
+          config_(std::move(config)),
+          callbacks_(std::move(callbacks)),
           output_timer_(&owner_),
           transport_(std::move(transport)),
           core_([this](const char* data, std::size_t length) {
@@ -31,6 +34,8 @@ public:
     }
 
     WxTerminalCtrl& owner_;
+    TerminalConfig config_;
+    TerminalCallbacks callbacks_;
     wxFont font_;
     wxTimer output_timer_;
     std::unique_ptr<TerminalTransport> transport_;
@@ -56,12 +61,17 @@ public:
     std::chrono::steady_clock::time_point last_click_time_;
     TransportState last_transport_state_ = TransportState::Stopped;
     std::chrono::steady_clock::time_point last_metrics_log_;
+    std::chrono::steady_clock::time_point last_metrics_callback_;
+    std::string last_title_;
+    std::string last_error_;
 };
 
 WxTerminalCtrl::WxTerminalCtrl(
-    wxWindow* parent, std::unique_ptr<TerminalTransport> transport)
+    wxWindow* parent, std::unique_ptr<TerminalTransport> transport,
+    TerminalConfig config, TerminalCallbacks callbacks)
     : wxPanel(parent),
-      impl_(std::make_unique<Impl>(*this, std::move(transport)))
+      impl_(std::make_unique<Impl>(*this, std::move(transport),
+                                  std::move(config), std::move(callbacks)))
 {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     SetFocus();
@@ -80,20 +90,27 @@ WxTerminalCtrl::WxTerminalCtrl(
     Bind(wxEVT_MOTION, &WxTerminalCtrl::OnMotion, this);
     Bind(wxEVT_TIMER, &WxTerminalCtrl::OnTimer, this);
 
-    impl_->font_ = wxFont(12, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
-                          wxFONTWEIGHT_NORMAL, false, "DejaVu Sans Mono");
+    impl_->font_ = wxFont(std::max(1, impl_->config_.font_size),
+                          wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
+                          wxFONTWEIGHT_NORMAL, false,
+                          wxString::FromUTF8(impl_->config_.font_family.c_str()));
 
     if (!impl_->core_.IsReady()) {
         impl_->error_ = wxString::FromUTF8(impl_->core_.Error().c_str());
+        ReportError(impl_->core_.Error());
         return;
     }
 
     UpdateGeometry();
-    if (impl_->transport_ != nullptr) {
+    const auto metrics_start = std::chrono::steady_clock::now();
+    impl_->last_metrics_log_ = metrics_start;
+    impl_->last_metrics_callback_ = metrics_start;
+    if (impl_->transport_ != nullptr && impl_->config_.start_transport) {
         const char* shell = std::getenv("SHELL");
         if (!impl_->transport_->Start(impl_->columns_, impl_->rows_,
                                       shell == nullptr ? "" : shell)) {
             impl_->error_ = "No platform terminal transport is available";
+            ReportError("No platform terminal transport is available");
             const char* notice =
                 "\x1b[1;33mSakura wx terminal\x1b[0m\r\n"
                 "This build has libtsm and wxWidgets, but could not start "
@@ -104,11 +121,12 @@ WxTerminalCtrl::WxTerminalCtrl(
         impl_->last_transport_state_ = initial_status.state == TransportState::Failed
             ? TransportState::Failed
             : TransportState::Stopped;
-        UpdateTransportTitle(initial_status);
+        NotifyTitleChanged();
+        NotifyTransportStatus(initial_status);
         impl_->trace_metrics_ = std::getenv("SAKURA_TRACE_METRICS") != nullptr;
-        impl_->last_metrics_log_ = std::chrono::steady_clock::now();
     }
-    impl_->output_timer_.Start(16);
+    impl_->output_timer_.Start(static_cast<int>(std::max(1u,
+        impl_->config_.timer_interval_ms)));
 }
 
 WxTerminalCtrl::~WxTerminalCtrl()
@@ -181,12 +199,16 @@ uint32_t WxTerminalCtrl::KeySymFor(const wxKeyEvent& event)
 void WxTerminalCtrl::OnPaint(wxPaintEvent&)
 {
     wxAutoBufferedPaintDC dc(this);
-    dc.SetBackground(wxBrush(wxColour(16, 18, 20)));
+    const auto& background = impl_->config_.background;
+    dc.SetBackground(wxBrush(wxColour(background[0], background[1],
+                                       background[2])));
     dc.Clear();
     dc.SetFont(impl_->font_);
 
     if (!impl_->core_.IsReady()) {
-        dc.SetTextForeground(wxColour(240, 180, 90));
+        const auto& error_foreground = impl_->config_.error_foreground;
+        dc.SetTextForeground(wxColour(error_foreground[0], error_foreground[1],
+                                      error_foreground[2]));
         dc.DrawText(impl_->error_, 12, 12);
         return;
     }
@@ -539,43 +561,29 @@ bool WxTerminalCtrl::PasteFromClipboard()
     return true;
 }
 
-wxString WxTerminalCtrl::TransportTitle(const TransportStatus& status) const
+void WxTerminalCtrl::NotifyTitleChanged()
 {
-    wxString base = "Sakura wx terminal — libtsm";
-    if (!impl_->core_.Title().empty()) {
-        wxString terminal_title = wxString::FromUTF8(impl_->core_.Title());
-        terminal_title.Replace("\r", " ");
-        terminal_title.Replace("\n", " ");
-        if (terminal_title.length() > 120)
-            terminal_title = terminal_title.Left(117) + "...";
-        if (!terminal_title.empty())
-            base += " — " + terminal_title;
-    }
-    switch (status.state) {
-    case TransportState::Running:
-        return base;
-    case TransportState::Exited:
-        if (status.exit_code_valid && status.signal == 0)
-            return base + wxString::Format(" [process exited %d]", status.exit_code);
-        if (status.exit_code_valid && status.signal != 0)
-            return base + wxString::Format(" [process terminated by signal %d]",
-                                           status.signal);
-        return base + " [process exited]";
-    case TransportState::Failed:
-        return base + " [transport failed]";
-    case TransportState::Starting:
-        return base + " [starting]";
-    case TransportState::Stopped:
-        return base + " [stopped]";
-    }
-    return base;
+    const std::string title = impl_->core_.Title();
+    if (title == impl_->last_title_)
+        return;
+    impl_->last_title_ = title;
+    if (impl_->callbacks_.on_title_changed)
+        impl_->callbacks_.on_title_changed(title);
 }
 
-void WxTerminalCtrl::UpdateTransportTitle(const TransportStatus& status)
+void WxTerminalCtrl::NotifyTransportStatus(const TransportStatus& status)
 {
-    auto* frame = wxDynamicCast(GetParent(), wxFrame);
-    if (frame != nullptr)
-        frame->SetTitle(TransportTitle(status));
+    if (impl_->callbacks_.on_transport_status_changed)
+        impl_->callbacks_.on_transport_status_changed(status);
+}
+
+void WxTerminalCtrl::ReportError(const std::string& message)
+{
+    if (message.empty() || message == impl_->last_error_)
+        return;
+    impl_->last_error_ = message;
+    if (impl_->callbacks_.on_error)
+        impl_->callbacks_.on_error(message);
 }
 
 void WxTerminalCtrl::ShowTransportNotice(const TransportStatus& status)
@@ -621,7 +629,9 @@ void WxTerminalCtrl::RestartTransport()
     impl_->last_transport_state_ = status.state == TransportState::Failed
         ? TransportState::Failed
         : TransportState::Stopped;
-    UpdateTransportTitle(status);
+    NotifyTransportStatus(status);
+    if (status.state == TransportState::Failed)
+        ReportError("Terminal process failed to start");
     Refresh(false);
 }
 
@@ -630,52 +640,16 @@ void WxTerminalCtrl::UpdateTransportStatus()
     if (impl_->transport_ == nullptr)
         return;
     const TransportStatus status = impl_->transport_->GetStatus();
-    UpdateTransportTitle(status);
     if (status.state == impl_->last_transport_state_)
         return;
     impl_->last_transport_state_ = status.state;
+    NotifyTransportStatus(status);
+    if (status.state == TransportState::Failed)
+        ReportError("Terminal process failed to start");
     if (status.state == TransportState::Exited ||
         status.state == TransportState::Failed)
         ShowTransportNotice(status);
     Refresh(false);
-}
-
-bool WxTerminalCtrl::RunScenario()
-{
-    if (!impl_->core_.IsReady())
-        return false;
-
-    const char* text = "\x1b[2J\x1b[Hscenario";
-    impl_->core_.FeedOutput(text, std::strlen(text));
-    wxMouseEvent down(wxEVT_LEFT_DOWN);
-    down.SetPosition(wxPoint(1, 1));
-    OnLeftDown(down);
-    wxMouseEvent up(wxEVT_LEFT_UP);
-    up.SetPosition(wxPoint(7 * impl_->cell_width_ + 1, 1));
-    wxMouseEvent motion(wxEVT_MOTION);
-    motion.SetLeftDown(true);
-    motion.SetPosition(up.GetPosition());
-    OnMotion(motion);
-    OnLeftUp(up);
-    if (impl_->core_.CopySelection().find("scenario") == std::string::npos)
-        return false;
-
-    wxMouseEvent shift_down(wxEVT_LEFT_DOWN);
-    shift_down.SetShiftDown(true);
-    shift_down.SetPosition(wxPoint(9 * impl_->cell_width_ + 1, 1));
-    OnLeftDown(shift_down);
-    wxMouseEvent shift_up(wxEVT_LEFT_UP);
-    shift_up.SetPosition(shift_down.GetPosition());
-    OnLeftUp(shift_up);
-    if (impl_->core_.CopySelection().find("scenario") == std::string::npos)
-        return false;
-    if (!CopySelectionToClipboard())
-        return false;
-    if (!PasteFromClipboard())
-        return false;
-
-    const TerminalMetrics metrics = impl_->core_.GetMetrics();
-    return metrics.selection_copies >= 2 && metrics.paste_bytes >= 8;
 }
 
 void WxTerminalCtrl::OnTimer(wxTimerEvent&)
@@ -692,10 +666,21 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
         impl_->core_.FeedOutput(chunk.data(), chunk.size());
     if (!output.empty())
         Refresh(false);
+    NotifyTitleChanged();
     UpdateTransportStatus();
 
+    const auto now = std::chrono::steady_clock::now();
+    if (impl_->callbacks_.on_metrics && impl_->config_.metrics_interval_ms > 0 &&
+        now - impl_->last_metrics_callback_ >= std::chrono::milliseconds(
+            impl_->config_.metrics_interval_ms)) {
+        const TerminalMetrics core_metrics = impl_->core_.GetMetrics();
+        const TransportMetrics transport_metrics = impl_->transport_ != nullptr
+            ? impl_->transport_->GetMetrics() : TransportMetrics {};
+        impl_->callbacks_.on_metrics(core_metrics, transport_metrics);
+        impl_->last_metrics_callback_ = now;
+    }
+
     if (impl_->trace_metrics_) {
-        const auto now = std::chrono::steady_clock::now();
         if (now - impl_->last_metrics_log_ >= std::chrono::seconds(1)) {
             const TerminalMetrics core_metrics = impl_->core_.GetMetrics();
             const TransportMetrics transport_metrics = impl_->transport_ != nullptr

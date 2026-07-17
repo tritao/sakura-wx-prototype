@@ -1,7 +1,6 @@
 #pragma once
 
-#include <sakura/terminal/core.h>
-#include <sakura/terminal/transport.h>
+#include <sakura/wx/config.h>
 
 #include <wx/wx.h>
 
@@ -12,14 +11,13 @@
 class WxTerminalCtrl final : public wxPanel {
 public:
     explicit WxTerminalCtrl(wxWindow* parent,
-                            std::unique_ptr<TerminalTransport> transport = nullptr);
+                            std::unique_ptr<TerminalTransport> transport = nullptr,
+                            TerminalConfig config = {},
+                            TerminalCallbacks callbacks = {});
     ~WxTerminalCtrl() override;
 
     TerminalCore& Core();
     const TerminalCore& Core() const;
-
-    // Deterministic interaction hook used by the UX smoke test and embedders.
-    bool RunScenario();
 
 private:
     void UpdateGeometry();
@@ -42,8 +40,9 @@ private:
     void OnMotion(wxMouseEvent& event);
     bool CopySelectionToClipboard();
     bool PasteFromClipboard();
-    wxString TransportTitle(const TransportStatus& status) const;
-    void UpdateTransportTitle(const TransportStatus& status);
+    void NotifyTitleChanged();
+    void NotifyTransportStatus(const TransportStatus& status);
+    void ReportError(const std::string& message);
     void ShowTransportNotice(const TransportStatus& status);
     void RestartTransport();
     void UpdateTransportStatus();
