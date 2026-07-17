@@ -7,11 +7,13 @@
 #include <wx/dcbuffer.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -33,7 +35,13 @@ public:
     {
     }
 
+    void AssertOwnerThread() const
+    {
+        assert(std::this_thread::get_id() == owner_thread_);
+    }
+
     WxTerminalCtrl& owner_;
+    std::thread::id owner_thread_ = std::this_thread::get_id();
     TerminalConfig config_;
     TerminalCallbacks callbacks_;
     wxFont font_;
@@ -131,6 +139,7 @@ WxTerminalCtrl::WxTerminalCtrl(
 
 WxTerminalCtrl::~WxTerminalCtrl()
 {
+    impl_->AssertOwnerThread();
     impl_->output_timer_.Stop();
     if (impl_->transport_ != nullptr)
         impl_->transport_->Stop();
@@ -138,11 +147,13 @@ WxTerminalCtrl::~WxTerminalCtrl()
 
 TerminalCore& WxTerminalCtrl::Core()
 {
+    impl_->AssertOwnerThread();
     return impl_->core_;
 }
 
 const TerminalCore& WxTerminalCtrl::Core() const
 {
+    impl_->AssertOwnerThread();
     return impl_->core_;
 }
 
@@ -563,6 +574,7 @@ bool WxTerminalCtrl::PasteFromClipboard()
 
 void WxTerminalCtrl::NotifyTitleChanged()
 {
+    impl_->AssertOwnerThread();
     const std::string title = impl_->core_.Title();
     if (title == impl_->last_title_)
         return;
@@ -573,12 +585,14 @@ void WxTerminalCtrl::NotifyTitleChanged()
 
 void WxTerminalCtrl::NotifyTransportStatus(const TransportStatus& status)
 {
+    impl_->AssertOwnerThread();
     if (impl_->callbacks_.on_transport_status_changed)
         impl_->callbacks_.on_transport_status_changed(status);
 }
 
 void WxTerminalCtrl::ReportError(const std::string& message)
 {
+    impl_->AssertOwnerThread();
     if (message.empty() || message == impl_->last_error_)
         return;
     impl_->last_error_ = message;
@@ -654,6 +668,7 @@ void WxTerminalCtrl::UpdateTransportStatus()
 
 void WxTerminalCtrl::OnTimer(wxTimerEvent&)
 {
+    impl_->AssertOwnerThread();
     if (impl_->selection_dragging_ && impl_->auto_scroll_direction_ != 0) {
         impl_->core_.ScrollLines(impl_->auto_scroll_direction_ < 0 ? 1 : -1);
         const auto [column, row] = CellAt(impl_->last_pointer_position_);

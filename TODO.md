@@ -48,11 +48,12 @@ cross-platform terminal library and a Sakura frontend foundation.
     stale output after restart, make `Start()`/`Stop()` idempotent, and report
     exit codes, signals, and failure reasons exactly once.
 
-- [ ] Define thread-safety and ownership rules.
+- [x] Define thread-safety and ownership rules.
   - Document which `TerminalCore` methods are UI-thread-only.
   - Specify transport worker-thread and output-queue ownership.
   - Define callback thread, lifetime, reentrancy, and shutdown guarantees.
-  - Add misuse and concurrent lifecycle tests where practical.
+  - Add debug thread-affinity assertions and validate the contract with
+    lifecycle, PTY stress, and replay tests.
 
 ## Backend abstraction and comparison
 

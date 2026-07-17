@@ -10,6 +10,8 @@
 
 class WxTerminalCtrl final : public wxPanel {
 public:
+    // The control owns the supplied transport and stops it before destruction.
+    // All control methods and callbacks are UI-thread-affine.
     explicit WxTerminalCtrl(wxWindow* parent,
                             std::unique_ptr<TerminalTransport> transport = nullptr,
                             TerminalConfig config = {},

@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <utility>
 
 class TerminalCore::Impl {
@@ -44,6 +46,16 @@ public:
     bool IsReady() const
     {
         return screen_ != nullptr && vte_ != nullptr;
+    }
+
+    void AssertOwnerThread() const
+    {
+        assert(std::this_thread::get_id() == owner_thread_);
+    }
+
+    void RebindOwnerThread()
+    {
+        owner_thread_ = std::this_thread::get_id();
     }
 
     void FeedOutput(const char* data, std::size_t length)
@@ -229,6 +241,7 @@ private:
     TerminalMetrics metrics_;
     std::chrono::steady_clock::time_point last_output_time_;
     bool output_waiting_for_render_ = false;
+    std::thread::id owner_thread_ = std::this_thread::get_id();
 
     friend class TerminalCore;
 };
@@ -240,29 +253,50 @@ TerminalCore::TerminalCore(WriteCallback write_callback)
 
 TerminalCore::~TerminalCore() = default;
 
-TerminalCore::TerminalCore(TerminalCore&&) noexcept = default;
+TerminalCore::TerminalCore(TerminalCore&& other) noexcept
+    : impl_(std::move(other.impl_))
+{
+    if (impl_ != nullptr)
+        impl_->RebindOwnerThread();
+}
 
-TerminalCore& TerminalCore::operator=(TerminalCore&&) noexcept = default;
+TerminalCore& TerminalCore::operator=(TerminalCore&& other) noexcept
+{
+    if (this == &other)
+        return *this;
+    impl_ = std::move(other.impl_);
+    if (impl_ != nullptr)
+        impl_->RebindOwnerThread();
+    return *this;
+}
 
 bool TerminalCore::IsReady() const
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     return impl_ != nullptr && impl_->IsReady();
 }
 
 const std::string& TerminalCore::Error() const
 {
     static const std::string empty;
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     return impl_ == nullptr ? empty : impl_->error_;
 }
 
 const std::string& TerminalCore::Title() const
 {
     static const std::string empty;
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     return impl_ == nullptr ? empty : impl_->title_;
 }
 
 bool TerminalCore::Resize(unsigned int columns, unsigned int rows)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     return impl_ != nullptr && impl_->screen_ != nullptr &&
            tsm_screen_resize(impl_->screen_, columns, rows) == 0;
 }
@@ -270,12 +304,16 @@ bool TerminalCore::Resize(unsigned int columns, unsigned int rows)
 void TerminalCore::FeedOutput(const char* data, std::size_t length)
 {
     if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
+    if (impl_ != nullptr)
         impl_->FeedOutput(data, length);
 }
 
 bool TerminalCore::HandleKey(uint32_t keysym, uint32_t ascii,
                              unsigned int modifiers, uint32_t unicode)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr)
         return false;
     ++impl_->metrics_.input_events;
@@ -285,6 +323,8 @@ bool TerminalCore::HandleKey(uint32_t keysym, uint32_t ascii,
 
 void TerminalCore::Paste(const std::string& text)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->vte_ == nullptr || text.empty())
         return;
     impl_->metrics_.paste_bytes += text.size();
@@ -296,6 +336,8 @@ bool TerminalCore::HandleMouse(unsigned int cell_x, unsigned int cell_y,
                                unsigned int button, unsigned int event,
                                unsigned char modifiers)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->vte_ == nullptr)
         return false;
     ++impl_->metrics_.mouse_events;
@@ -308,24 +350,32 @@ bool TerminalCore::HandleMouse(unsigned int cell_x, unsigned int cell_y,
 
 bool TerminalCore::MouseReportingEnabled() const
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     return impl_ != nullptr && impl_->vte_ != nullptr &&
            tsm_vte_get_mouse_mode(impl_->vte_) != 0;
 }
 
 void TerminalCore::ScrollPageUp(unsigned int pages)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ != nullptr && impl_->screen_ != nullptr)
         tsm_screen_sb_page_up(impl_->screen_, pages);
 }
 
 void TerminalCore::ScrollPageDown(unsigned int pages)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ != nullptr && impl_->screen_ != nullptr)
         tsm_screen_sb_page_down(impl_->screen_, pages);
 }
 
 void TerminalCore::ScrollLines(int lines)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->screen_ == nullptr || lines == 0)
         return;
     if (lines > 0)
@@ -336,6 +386,8 @@ void TerminalCore::ScrollLines(int lines)
 
 void TerminalCore::StartSelection(unsigned int column, unsigned int row)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->screen_ == nullptr ||
         column >= tsm_screen_get_width(impl_->screen_) ||
         row >= tsm_screen_get_height(impl_->screen_))
@@ -346,12 +398,16 @@ void TerminalCore::StartSelection(unsigned int column, unsigned int row)
 
 void TerminalCore::UpdateSelection(unsigned int column, unsigned int row)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ != nullptr && impl_->screen_ != nullptr && impl_->selection_active_)
         tsm_screen_selection_target(impl_->screen_, column, row);
 }
 
 void TerminalCore::SelectWord(unsigned int column, unsigned int row)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->screen_ == nullptr ||
         column >= tsm_screen_get_width(impl_->screen_) ||
         row >= tsm_screen_get_height(impl_->screen_))
@@ -363,6 +419,8 @@ void TerminalCore::SelectWord(unsigned int column, unsigned int row)
 
 void TerminalCore::SelectLine(unsigned int row)
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->screen_ == nullptr ||
         row >= tsm_screen_get_height(impl_->screen_))
         return;
@@ -372,6 +430,8 @@ void TerminalCore::SelectLine(unsigned int row)
 
 void TerminalCore::ClearSelection()
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ != nullptr && impl_->screen_ != nullptr)
         tsm_screen_selection_reset(impl_->screen_);
     if (impl_ != nullptr)
@@ -380,11 +440,15 @@ void TerminalCore::ClearSelection()
 
 bool TerminalCore::HasSelection() const
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     return impl_ != nullptr && impl_->selection_active_;
 }
 
 std::string TerminalCore::CopySelection()
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->screen_ == nullptr ||
         !impl_->selection_active_)
         return {};
@@ -406,6 +470,8 @@ std::string TerminalCore::CopySelection()
 
 TerminalSnapshot TerminalCore::TakeSnapshot()
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     TerminalSnapshot snapshot;
     if (impl_ == nullptr || impl_->screen_ == nullptr)
         return snapshot;
@@ -438,5 +504,7 @@ TerminalSnapshot TerminalCore::TakeSnapshot()
 
 TerminalMetrics TerminalCore::GetMetrics() const
 {
+    if (impl_ != nullptr)
+        impl_->AssertOwnerThread();
     return impl_ == nullptr ? TerminalMetrics {} : impl_->metrics_;
 }

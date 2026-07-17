@@ -58,6 +58,9 @@ The public terminal headers do not expose libtsm implementation types. Input
 and mouse constants are defined by Sakura's terminal API, while libtsm remains
 an implementation detail of the compiled core library.
 
+Threading, ownership, callback lifetime, and shutdown guarantees are documented
+in [`docs/architecture.md`](docs/architecture.md).
+
 ## Get the source
 
 ```sh

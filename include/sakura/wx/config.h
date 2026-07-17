@@ -19,6 +19,9 @@ struct TerminalConfig {
 };
 
 struct TerminalCallbacks {
+    // Callbacks execute synchronously on the WxTerminalCtrl/UI thread. They
+    // must not destroy or re-enter the control; defer such work to the host
+    // event loop instead.
     std::function<void(const std::string&)> on_title_changed;
     std::function<void(const TransportStatus&)> on_transport_status_changed;
     std::function<void(const std::string&)> on_error;

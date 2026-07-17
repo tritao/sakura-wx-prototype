@@ -85,6 +85,9 @@ class TerminalCore final {
 public:
     using WriteCallback = std::function<void(const char*, std::size_t)>;
 
+    // TerminalCore is single-thread-affine: construct it and call all methods
+    // from the same thread. The write callback runs synchronously on that
+    // thread and must not re-enter TerminalCore.
     explicit TerminalCore(WriteCallback write_callback);
     ~TerminalCore();
 
