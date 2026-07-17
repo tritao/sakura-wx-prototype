@@ -83,16 +83,12 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
     exit_code_valid_.store(false);
 
 #if defined(_WIN32)
-    SECURITY_ATTRIBUTES security_attributes {};
-    security_attributes.nLength = sizeof(security_attributes);
-    security_attributes.bInheritHandle = TRUE;
-
     HANDLE input_read = nullptr;
     HANDLE input_write = nullptr;
     HANDLE output_read = nullptr;
     HANDLE output_write = nullptr;
-    if (!CreatePipe(&input_read, &input_write, &security_attributes, 0) ||
-        !CreatePipe(&output_read, &output_write, &security_attributes, 0)) {
+    if (!CreatePipe(&input_read, &input_write, nullptr, 0) ||
+        !CreatePipe(&output_read, &output_write, nullptr, 0)) {
         if (input_read) CloseHandle(input_read);
         if (input_write) CloseHandle(input_write);
         if (output_read) CloseHandle(output_read);
