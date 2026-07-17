@@ -18,6 +18,19 @@ struct TerminalConfig {
     bool start_transport = true;
 };
 
+struct WxPaintMetrics {
+    uint64_t paint_events = 0;
+    uint64_t full_repaints = 0;
+    uint64_t partial_repaints = 0;
+    uint64_t framebuffer_rebuilds = 0;
+    uint64_t painted_cells = 0;
+    uint64_t paint_time_us = 0;
+    uint64_t max_paint_time_us = 0;
+    uint64_t refresh_requests = 0;
+    uint64_t full_refresh_requests = 0;
+    uint64_t dirty_refresh_requests = 0;
+};
+
 struct TerminalCallbacks {
     // Callbacks execute synchronously on the WxTerminalCtrl/UI thread. They
     // must not destroy or re-enter the control; defer such work to the host

@@ -20,14 +20,21 @@ public:
 
     TerminalCore& Core();
     const TerminalCore& Core() const;
+    // Capture the latest core frame and schedule the smallest appropriate wx
+    // invalidation. Hosts that mutate Core() directly should call this after
+    // feeding output or changing terminal state.
+    void RefreshFrame();
+    WxPaintMetrics GetPaintMetrics() const;
 
 private:
+    void RequestFrameRefresh();
     void UpdateGeometry();
     static uint32_t KeySymFor(const wxKeyEvent& event);
     const wxFont& GlyphFont(uint8_t attributes);
     const wxString& GlyphText(const std::string& text);
     void RenderSnapshot(wxDC& dc, const TerminalSnapshot& snapshot,
-                        const TerminalDirtyRegion& dirty);
+                        const TerminalDirtyRegion& dirty,
+                        uint64_t* painted_cells);
     void OnPaint(wxPaintEvent& event);
     void OnSize(wxSizeEvent& event);
     void OnChar(wxKeyEvent& event);

@@ -53,6 +53,8 @@ public:
     std::unordered_map<std::string, wxString> glyph_texts_;
     wxBitmap framebuffer_;
     bool framebuffer_valid_ = false;
+    TerminalFrame pending_frame_;
+    WxPaintMetrics paint_metrics_;
     wxTimer output_timer_;
     std::unique_ptr<TerminalTransport> transport_;
     TerminalCore core_;
@@ -165,6 +167,76 @@ const TerminalCore& WxTerminalCtrl::Core() const
     return impl_->core_;
 }
 
+void WxTerminalCtrl::RefreshFrame()
+{
+    RequestFrameRefresh();
+}
+
+WxPaintMetrics WxTerminalCtrl::GetPaintMetrics() const
+{
+    impl_->AssertOwnerThread();
+    return impl_->paint_metrics_;
+}
+
+void WxTerminalCtrl::RequestFrameRefresh()
+{
+    impl_->AssertOwnerThread();
+    const TerminalFrame frame = impl_->core_.TakeFrame();
+    if (frame.snapshot == nullptr || !frame.changed)
+        return;
+
+    if (impl_->pending_frame_.snapshot == nullptr) {
+        impl_->pending_frame_ = frame;
+    } else {
+        const TerminalSnapshot& snapshot = *frame.snapshot;
+        if (frame.full_repaint) {
+            impl_->pending_frame_.dirty = {
+                0, 0, snapshot.columns, snapshot.rows
+            };
+        } else if (!frame.dirty.IsEmpty()) {
+            TerminalDirtyRegion& dirty = impl_->pending_frame_.dirty;
+            if (dirty.IsEmpty()) {
+                dirty = frame.dirty;
+            } else {
+                dirty.left = std::min(dirty.left, frame.dirty.left);
+                dirty.top = std::min(dirty.top, frame.dirty.top);
+                dirty.right = std::max(dirty.right, frame.dirty.right);
+                dirty.bottom = std::max(dirty.bottom, frame.dirty.bottom);
+            }
+        }
+        impl_->pending_frame_.generation = frame.generation;
+        impl_->pending_frame_.changed = true;
+        impl_->pending_frame_.full_repaint =
+            impl_->pending_frame_.full_repaint || frame.full_repaint;
+        impl_->pending_frame_.snapshot = frame.snapshot;
+    }
+
+    ++impl_->paint_metrics_.refresh_requests;
+    const TerminalFrame& pending = impl_->pending_frame_;
+    if (pending.full_repaint || pending.dirty.IsEmpty()) {
+        ++impl_->paint_metrics_.full_refresh_requests;
+        Refresh(false);
+        return;
+    }
+
+    const TerminalSnapshot& snapshot = *pending.snapshot;
+    const unsigned int left = std::min(pending.dirty.left, snapshot.columns);
+    const unsigned int top = std::min(pending.dirty.top, snapshot.rows);
+    const unsigned int right = std::min(pending.dirty.right, snapshot.columns);
+    const unsigned int bottom = std::min(pending.dirty.bottom, snapshot.rows);
+    if (left >= right || top >= bottom) {
+        ++impl_->paint_metrics_.full_refresh_requests;
+        Refresh(false);
+        return;
+    }
+
+    ++impl_->paint_metrics_.dirty_refresh_requests;
+    RefreshRect(wxRect(left * impl_->cell_width_,
+                       top * impl_->cell_height_,
+                       (right - left) * impl_->cell_width_,
+                       (bottom - top) * impl_->cell_height_), false);
+}
+
 void WxTerminalCtrl::UpdateGeometry()
 {
     wxClientDC dc(this);
@@ -246,7 +318,8 @@ const wxString& WxTerminalCtrl::GlyphText(const std::string& text)
 
 void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
                                     const TerminalSnapshot& snapshot,
-                                    const TerminalDirtyRegion& dirty)
+                                    const TerminalDirtyRegion& dirty,
+                                    uint64_t* painted_cells)
 {
     if (dirty.IsEmpty() || snapshot.columns == 0 || snapshot.rows == 0)
         return;
@@ -270,6 +343,8 @@ void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
 
     for (unsigned int row = top; row < bottom; ++row) {
         for (unsigned int column = left; column < right; ++column) {
+            if (painted_cells != nullptr)
+                ++*painted_cells;
             const auto& cell = snapshot.cells[row * snapshot.columns + column];
             if (cell.width == 0)
                 continue;
@@ -325,6 +400,17 @@ void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
 
 void WxTerminalCtrl::OnPaint(wxPaintEvent&)
 {
+    const auto paint_start = std::chrono::steady_clock::now();
+    ++impl_->paint_metrics_.paint_events;
+    const auto record_paint = [this, &paint_start]() {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - paint_start).count();
+        const uint64_t elapsed_us = static_cast<uint64_t>(
+            std::max<int64_t>(0, elapsed));
+        impl_->paint_metrics_.paint_time_us += elapsed_us;
+        impl_->paint_metrics_.max_paint_time_us = std::max(
+            impl_->paint_metrics_.max_paint_time_us, elapsed_us);
+    };
     wxAutoBufferedPaintDC dc(this);
     const auto& background = impl_->config_.background;
     dc.SetBackground(wxBrush(wxColour(background[0], background[1],
@@ -336,12 +422,21 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         dc.SetTextForeground(wxColour(error_foreground[0], error_foreground[1],
                                       error_foreground[2]));
         dc.DrawText(impl_->error_, 12, 12);
+        record_paint();
         return;
     }
 
-    const TerminalFrame frame = impl_->core_.TakeFrame();
-    if (frame.snapshot == nullptr)
+    TerminalFrame frame;
+    if (impl_->pending_frame_.snapshot != nullptr) {
+        frame = std::move(impl_->pending_frame_);
+        impl_->pending_frame_ = {};
+    } else {
+        frame = impl_->core_.TakeFrame();
+    }
+    if (frame.snapshot == nullptr) {
+        record_paint();
         return;
+    }
     const TerminalSnapshot& snapshot = *frame.snapshot;
     const wxSize client_size = GetClientSize();
     const int bitmap_width = std::max(1, client_size.GetWidth());
@@ -351,11 +446,14 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         impl_->framebuffer_.GetHeight() != bitmap_height) {
         impl_->framebuffer_ = wxBitmap(bitmap_width, bitmap_height, -1);
         impl_->framebuffer_valid_ = false;
+        ++impl_->paint_metrics_.framebuffer_rebuilds;
     }
 
     wxMemoryDC framebuffer_dc;
     framebuffer_dc.SelectObject(impl_->framebuffer_);
+    uint64_t painted_cells = 0;
     if (!impl_->framebuffer_valid_ || frame.full_repaint) {
+        ++impl_->paint_metrics_.full_repaints;
         framebuffer_dc.SetBackground(wxBrush(wxColour(background[0],
                                                        background[1],
                                                        background[2])));
@@ -363,19 +461,24 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         const TerminalDirtyRegion full_region {
             0, 0, snapshot.columns, snapshot.rows
         };
-        RenderSnapshot(framebuffer_dc, snapshot, full_region);
+        RenderSnapshot(framebuffer_dc, snapshot, full_region, &painted_cells);
         impl_->framebuffer_valid_ = true;
     } else if (frame.changed) {
-        RenderSnapshot(framebuffer_dc, snapshot, frame.dirty);
+        ++impl_->paint_metrics_.partial_repaints;
+        RenderSnapshot(framebuffer_dc, snapshot, frame.dirty, &painted_cells);
     }
     framebuffer_dc.SelectObject(wxNullBitmap);
+    impl_->paint_metrics_.painted_cells += painted_cells;
 
     dc.DrawBitmap(impl_->framebuffer_, 0, 0, false);
+    record_paint();
 }
 
 void WxTerminalCtrl::OnSize(wxSizeEvent& event)
 {
     UpdateGeometry();
+    ++impl_->paint_metrics_.refresh_requests;
+    ++impl_->paint_metrics_.full_refresh_requests;
     Refresh(false);
     event.Skip();
 }
@@ -413,7 +516,7 @@ void WxTerminalCtrl::OnChar(wxKeyEvent& event)
 
     const uint32_t ascii = unicode <= 0x7f ? unicode : TerminalInvalid;
     if (impl_->core_.HandleKey(KeySymFor(event), ascii, modifiers, unicode)) {
-        Refresh(false);
+        RequestFrameRefresh();
         return;
     }
     event.Skip();
@@ -437,7 +540,7 @@ void WxTerminalCtrl::OnMouseWheel(wxMouseEvent& event)
         impl_->core_.ScrollPageUp(3);
     else if (event.GetWheelRotation() < 0)
         impl_->core_.ScrollPageDown(3);
-    Refresh(false);
+    RequestFrameRefresh();
 }
 
 std::pair<unsigned int, unsigned int>
@@ -536,7 +639,7 @@ void WxTerminalCtrl::OnLeftDown(wxMouseEvent& event)
     impl_->selection_anchor_column_ = column;
     impl_->selection_anchor_row_ = row;
     CaptureMouse();
-    Refresh(false);
+    RequestFrameRefresh();
 }
 
 void WxTerminalCtrl::OnLeftUp(wxMouseEvent& event)
@@ -558,7 +661,7 @@ void WxTerminalCtrl::OnLeftUp(wxMouseEvent& event)
         ReleaseMouse();
     if (should_copy)
         CopySelectionToClipboard();
-    Refresh(false);
+    RequestFrameRefresh();
 }
 
 void WxTerminalCtrl::OnMouseButtonDown(wxMouseEvent& event)
@@ -628,7 +731,7 @@ void WxTerminalCtrl::OnMotion(wxMouseEvent& event)
         return;
     impl_->last_pointer_position_ = position;
     UpdateSelectionAt(position);
-    Refresh(false);
+    RequestFrameRefresh();
 }
 
 bool WxTerminalCtrl::CopySelectionToClipboard()
@@ -657,7 +760,7 @@ bool WxTerminalCtrl::PasteFromClipboard()
     if (utf8.data() == nullptr)
         return false;
     impl_->core_.Paste(std::string(utf8.data(), utf8.length()));
-    Refresh(false);
+    RequestFrameRefresh();
     return true;
 }
 
@@ -735,7 +838,7 @@ void WxTerminalCtrl::RestartTransport()
     NotifyTransportStatus(status);
     if (status.state == TransportState::Failed)
         ReportError("Terminal process failed to start");
-    Refresh(false);
+    RequestFrameRefresh();
 }
 
 void WxTerminalCtrl::UpdateTransportStatus()
@@ -752,7 +855,7 @@ void WxTerminalCtrl::UpdateTransportStatus()
     if (status.state == TransportState::Exited ||
         status.state == TransportState::Failed)
         ShowTransportNotice(status);
-    Refresh(false);
+    RequestFrameRefresh();
 }
 
 void WxTerminalCtrl::OnTimer(wxTimerEvent&)
@@ -762,14 +865,14 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
         impl_->core_.ScrollLines(impl_->auto_scroll_direction_ < 0 ? 1 : -1);
         const auto [column, row] = CellAt(impl_->last_pointer_position_);
         impl_->core_.UpdateSelection(column, row);
-        Refresh(false);
+        RequestFrameRefresh();
     }
     const auto output = impl_->transport_ != nullptr
         ? impl_->transport_->TakeOutput() : std::vector<std::string> {};
     for (const auto& chunk : output)
         impl_->core_.FeedOutput(chunk.data(), chunk.size());
     if (!output.empty())
-        Refresh(false);
+        RequestFrameRefresh();
     NotifyTitleChanged();
     UpdateTransportStatus();
 
@@ -794,6 +897,8 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          "writes=%lluB/%llu renders=%llu selection=%llu "
                          "latency-max=%lluus/%llu paste=%lluB "
                          "mouse=%llu/%llu modes=%llu "
+                         "paint=%llu full/%llu partial cells=%llu "
+                         "paint-max=%lluus refresh=%llu/%llu dirty "
                          "transport-read=%lluB/%llu "
                          "queue-high-water=%llu resize=%llu\n",
                          static_cast<unsigned long long>(core_metrics.output_bytes),
@@ -809,6 +914,12 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          static_cast<unsigned long long>(core_metrics.mouse_events),
                          static_cast<unsigned long long>(core_metrics.mouse_events_forwarded),
                          static_cast<unsigned long long>(core_metrics.mouse_mode_changes),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.full_repaints),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.partial_repaints),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.painted_cells),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.max_paint_time_us),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.refresh_requests),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.dirty_refresh_requests),
                          static_cast<unsigned long long>(transport_metrics.bytes_read),
                          static_cast<unsigned long long>(transport_metrics.read_events),
                          static_cast<unsigned long long>(transport_metrics.max_queued_bytes),
