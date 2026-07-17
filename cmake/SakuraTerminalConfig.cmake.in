@@ -1,0 +1,17 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+if(NOT TARGET wx::core AND NOT TARGET wxWidgets::wxWidgets)
+    find_dependency(wxWidgets COMPONENTS core)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/SakuraTerminalTargets.cmake")
+if(TARGET wx::core)
+    target_link_libraries(Sakura::WxTerminal INTERFACE wx::core)
+elseif(TARGET wxWidgets::wxWidgets)
+    target_link_libraries(Sakura::WxTerminal INTERFACE wxWidgets::wxWidgets)
+else()
+    message(FATAL_ERROR "SakuraTerminal requires a wxWidgets core target")
+endif()
+
+check_required_components(SakuraTerminal)

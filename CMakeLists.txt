@@ -10,6 +10,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
 include(CTest)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wxWidgets/CMakeLists.txt")
     message(FATAL_ERROR "wxWidgets submodule is missing. Run: git submodule update --init --recursive")
@@ -40,9 +42,11 @@ add_library(sakura_libtsm STATIC
     "${LIBTSM_ROOT}/src/tsm/tsm-vte-charsets.c"
     "${LIBTSM_ROOT}/src/tsm/tsm-vte.c"
 )
+set_target_properties(sakura_libtsm PROPERTIES EXPORT_NAME LibTsm)
 target_include_directories(sakura_libtsm
     PUBLIC
-        "${LIBTSM_ROOT}/src"
+        $<BUILD_INTERFACE:${LIBTSM_ROOT}/src>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         "${LIBTSM_ROOT}/src/tsm"
         "${LIBTSM_ROOT}/src/shared"
@@ -58,7 +62,12 @@ target_compile_features(sakura_libtsm PRIVATE c_std_99)
 add_library(sakura_terminal_core STATIC
     src/terminal_core.cpp
 )
-target_include_directories(sakura_terminal_core PUBLIC src)
+set_target_properties(sakura_terminal_core PROPERTIES EXPORT_NAME TerminalCore)
+target_include_directories(sakura_terminal_core
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 target_link_libraries(sakura_terminal_core PUBLIC sakura_libtsm)
 
 add_library(sakura_transport STATIC
@@ -66,8 +75,38 @@ add_library(sakura_transport STATIC
     src/pty_session.cpp
     src/transport_factory.cpp
 )
-target_include_directories(sakura_transport PUBLIC src)
+set_target_properties(sakura_transport PROPERTIES EXPORT_NAME TerminalTransport)
+target_include_directories(sakura_transport
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 target_link_libraries(sakura_transport PUBLIC Threads::Threads)
+
+add_library(sakura_wx_terminal STATIC
+    src/wx/terminal_ctrl.cpp
+)
+set_target_properties(sakura_wx_terminal PROPERTIES EXPORT_NAME WxTerminal)
+get_target_property(SAKURA_WX_CORE_INCLUDES wxcore INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(SAKURA_WX_CORE_DEFINITIONS wxcore INTERFACE_COMPILE_DEFINITIONS)
+target_include_directories(sakura_wx_terminal
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+        ${SAKURA_WX_CORE_INCLUDES}
+)
+target_compile_definitions(sakura_wx_terminal PRIVATE ${SAKURA_WX_CORE_DEFINITIONS})
+target_link_libraries(sakura_wx_terminal
+    PUBLIC
+        sakura_terminal_core
+        $<BUILD_INTERFACE:wx::core>
+)
+
+add_library(Sakura::TerminalCore ALIAS sakura_terminal_core)
+add_library(Sakura::TerminalTransport ALIAS sakura_transport)
+add_library(Sakura::WxTerminal ALIAS sakura_wx_terminal)
 
 if(UNIX)
     target_compile_definitions(sakura_transport PRIVATE SAKURA_WX_POSIX=1)
@@ -94,7 +133,7 @@ target_include_directories(sakura-wx-prototype PRIVATE
 )
 target_link_libraries(sakura-wx-prototype PRIVATE
     wx::core
-    sakura_terminal_core
+    sakura_wx_terminal
     sakura_transport
 )
 
@@ -115,8 +154,41 @@ if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
     sakura_enable_sanitizers(sakura_libtsm)
     sakura_enable_sanitizers(sakura_terminal_core)
     sakura_enable_sanitizers(sakura_transport)
+    sakura_enable_sanitizers(sakura_wx_terminal)
     sakura_enable_sanitizers(sakura-wx-prototype)
 endif()
+
+install(TARGETS sakura_libtsm sakura_terminal_core sakura_transport
+                sakura_wx_terminal
+    EXPORT SakuraTerminalTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES "${LIBTSM_ROOT}/src/tsm/libtsm.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/tsm")
+install(EXPORT SakuraTerminalTargets
+    FILE SakuraTerminalTargets.cmake
+    NAMESPACE Sakura::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SakuraTerminal"
+)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SakuraTerminalConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/SakuraTerminalConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SakuraTerminal"
+)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/SakuraTerminalConfigVersion.cmake"
+    COMPATIBILITY SameMajorVersion
+)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/SakuraTerminalConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/SakuraTerminalConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SakuraTerminal"
+)
 
 if(BUILD_TESTING)
     add_executable(sakura_terminal_core_test
@@ -127,6 +199,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(sakura_terminal_core_test PRIVATE sakura_terminal_core)
     add_test(NAME terminal_core COMMAND sakura_terminal_core_test)
+
+    add_executable(sakura_library_consumer_test
+        tests/library_consumer_test.cpp
+    )
+    target_link_libraries(sakura_library_consumer_test PRIVATE
+        Sakura::WxTerminal
+        Sakura::TerminalTransport
+    )
+    add_test(NAME library_consumer COMMAND sakura_library_consumer_test)
 
     add_executable(sakura_transport_smoke_test
         tests/transport_smoke_test.cpp
@@ -179,5 +260,6 @@ if(BUILD_TESTING)
         endif()
         sakura_enable_sanitizers(sakura_transport_smoke_test)
         sakura_enable_sanitizers(sakura_transport_lifecycle_test)
+        sakura_enable_sanitizers(sakura_library_consumer_test)
     endif()
 endif()

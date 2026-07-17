@@ -7,7 +7,7 @@
 #include <thread>
 #include <vector>
 
-#include "terminal_transport.h"
+#include <sakura/terminal/transport.h>
 
 class PosixPtySession final : public TerminalTransport {
 public:

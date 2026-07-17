@@ -1,4 +1,4 @@
-#include "transport_factory.h"
+#include <sakura/terminal/factory.h>
 
 #if defined(_WIN32)
 #include "conpty_session.h"

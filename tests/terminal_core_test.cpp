@@ -1,4 +1,4 @@
-#include "terminal_core.h"
+#include <sakura/terminal/core.h>
 
 #include <xkbcommon/xkbcommon-keysyms.h>
 

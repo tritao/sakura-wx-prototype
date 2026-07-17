@@ -19,6 +19,18 @@ The transport interface keeps the wx/libtsm rendering layer independent of the
 platform process plumbing. Native Windows validation is covered by CI; the
 local Linux path exercises the POSIX backend directly.
 
+The reusable library targets are:
+
+- `Sakura::TerminalCore`: libtsm-backed terminal state, parsing, input, and selection;
+- `Sakura::TerminalTransport`: the platform process bridge;
+- `Sakura::WxTerminal`: the wxWidgets terminal control, rendering, input, and clipboard integration.
+
+The wx control accepts an optional `TerminalTransport`, so applications can use
+the renderer with the bundled process bridge, a different backend, or no child
+process at all while driving `TerminalCore` directly. The bundled bridge is
+available through `CreateTerminalTransport()` in
+`<sakura/terminal/factory.h>`.
+
 ## Get the source
 
 ```sh
@@ -62,6 +74,23 @@ The same workflow is available through the convenience scripts:
 `BUILD_TYPE`, `BUILD_DIR`, and `JOBS` can be overridden as environment variables.
 Set `RUN_TESTS=1` to build and run the test suite as part of the build.
 
+To install the reusable targets and headers:
+
+```sh
+cmake --install build --prefix "$HOME/.local"
+```
+
+An installed consumer uses the package config and must provide a wxWidgets
+development installation:
+
+```cmake
+find_package(SakuraTerminal CONFIG REQUIRED)
+target_link_libraries(my_terminal_app PRIVATE Sakura::WxTerminal)
+```
+
+The source-tree build keeps wxWidgets as the pinned submodule; the installed
+package treats wxWidgets as a normal external dependency.
+
 ## Testing
 
 Configure and run the deterministic core, transport, PTY stress, and Linux wx tests:
@@ -95,8 +124,9 @@ wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidget
 
 ## Follow-up work
 
-1. Expand combining-mark coverage into full grapheme-cluster and emoji ZWJ selection tests.
-2. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
-3. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
+1. Hide libtsm and wxWidgets implementation details behind a PIMPL/ABI-stable public API.
+2. Expand combining-mark coverage into full grapheme-cluster and emoji ZWJ selection tests.
+3. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
+4. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
 
 The vendored third-party code remains under its upstream licenses. See `third_party/libtsm/COPYING` and `third_party/wxWidgets/docs/licence.txt`.
