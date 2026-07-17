@@ -95,7 +95,14 @@ int main()
 
         Check(transport->Start(80, 24, ""),
               "could not start the first restart session");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#if defined(_WIN32)
+        const auto first_startup_deadline = std::chrono::steady_clock::now() +
+                                            std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < first_startup_deadline &&
+               transport->GetMetrics().read_events == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+#endif
         Check(transport->Write(old_command.data(), old_command.size()),
               "could not write the first restart command");
         const TransportStatus old_status = WaitForTerminalState(*transport);
@@ -109,7 +116,14 @@ int main()
 
         Check(transport->Start(80, 24, ""),
               "could not restart the transport");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#if defined(_WIN32)
+        const auto second_startup_deadline = std::chrono::steady_clock::now() +
+                                             std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < second_startup_deadline &&
+               transport->GetMetrics().read_events == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+#endif
         const std::string stale_output = DrainOutput(*transport);
         Check(stale_output.find("sakura-old-session") == std::string::npos,
               "restart exposed stale output from the previous session");

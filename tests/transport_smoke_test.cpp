@@ -45,7 +45,14 @@ int main()
         auto transport = CreateTerminalTransport();
         Check(transport != nullptr, "transport factory returned null");
         Check(transport->Start(80, 24, ""), "transport failed to start");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#if defined(_WIN32)
+        const auto startup_deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < startup_deadline &&
+               transport->GetMetrics().read_events == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+#endif
 
 #if defined(_WIN32)
         const std::string command = "echo transport-smoke\rexit\r";
