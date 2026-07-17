@@ -5,7 +5,8 @@ This is a deliberately small wxWidgets/libtsm terminal vertical slice for explor
 The prototype currently provides:
 
 - wxWidgets window and custom terminal-cell drawing;
-- libtsm VT parsing, colors, cursor, scrollback, keyboard handling, and palette;
+- libtsm VT parsing, colors, cursor styles, alternate screen, scrollback, keyboard handling, and palette;
+- semantic VT coverage for OSC titles, bracketed paste, truecolor, text attributes, resizing, and wide glyph cells;
 - drag, word, line, multiline, Unicode, and scrollback selection with automatic copy;
 - scrollback auto-scroll, Shift-click extension, application mouse reporting, and Shift-forced local selection;
 - clipboard copy/paste and core/transport telemetry;
@@ -77,6 +78,13 @@ BUILD_DIR=build-sanitize SAKURA_ENABLE_SANITIZERS=ON RUN_TESTS=1 ./build.sh
 
 The core tests use semantic screen snapshots, while the PTY stress test exercises burst output, repeated resize, child completion, and shutdown. Transport lifecycle tests cover clean exit and failed shell startup. The wx smoke and UX tests run the real window under Xvfb when available.
 
+The renderer preserves libtsm's UTF-8 cell text and wide-cell widths, and maps
+bold, italic, underline, dim, inverse, truecolor, and DECSCUSR cursor styles
+into wxWidgets drawing state. libtsm v4.6.0 currently discards standalone
+zero-width combining marks while parsing VTE input; precomposed Unicode and
+wide glyphs are covered now, and combining-mark support remains a targeted
+follow-up before this prototype is used as a production terminal core.
+
 Set `SAKURA_TRACE_METRICS=1` when running the app to print periodic output,
 input, rendering latency, clipboard, transport queue, and resize counters:
 
@@ -88,7 +96,7 @@ wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidget
 
 ## Follow-up work
 
-1. Expand semantic VT cases and scripted mouse/keyboard latency thresholds.
+1. Add a compatibility layer or upstream fix for libtsm's standalone combining-mark path, then add grapheme-cluster selection tests.
 2. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
 3. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
 

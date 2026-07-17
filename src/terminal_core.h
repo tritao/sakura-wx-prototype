@@ -10,8 +10,16 @@
 
 #include <tsm/libtsm.h>
 
+enum class TerminalCursorStyle {
+    Block,
+    Underline,
+    Bar,
+};
+
 struct TerminalCell {
     uint32_t codepoint = ' ';
+    std::string text;
+    unsigned int width = 1;
     std::array<uint8_t, 3> foreground {};
     std::array<uint8_t, 3> background {};
     uint8_t attributes = 0;
@@ -23,6 +31,8 @@ struct TerminalSnapshot {
     unsigned int cursor_x = 0;
     unsigned int cursor_y = 0;
     bool cursor_visible = false;
+    TerminalCursorStyle cursor_style = TerminalCursorStyle::Block;
+    bool alternate_screen = false;
     std::vector<TerminalCell> cells;
 };
 
@@ -40,6 +50,8 @@ struct TerminalMetrics {
     uint64_t mouse_mode_changes = 0;
     uint64_t mouse_events = 0;
     uint64_t mouse_events_forwarded = 0;
+    uint64_t title_changes = 0;
+    uint64_t cursor_style_changes = 0;
 };
 
 class TerminalCore final {
@@ -54,6 +66,7 @@ public:
 
     bool IsReady() const { return screen_ != nullptr && vte_ != nullptr; }
     const std::string& Error() const { return error_; }
+    const std::string& Title() const { return title_; }
 
     bool Resize(unsigned int columns, unsigned int rows);
     void FeedOutput(const char* data, std::size_t length);
@@ -86,11 +99,29 @@ private:
     static void VteMouse(struct tsm_vte* vte,
                          enum tsm_mouse_track_mode track_mode,
                          bool track_pixels, void* user_data);
+    static int DrawCell(struct tsm_screen* screen, uint64_t id,
+                        const uint32_t* codepoints, std::size_t length,
+                        unsigned int width, unsigned int column,
+                        unsigned int row, const struct tsm_screen_attr* attr,
+                        tsm_age_t age, void* user_data);
+    static void VteOsc(struct tsm_vte* vte, const char* data,
+                       std::size_t length, void* user_data);
+    void TrackCursorStyle(const char* data, std::size_t length);
+
+    enum class CursorSequenceState {
+        Ground,
+        Escape,
+        Csi,
+        CsiIntermediate,
+    } cursor_sequence_state_ = CursorSequenceState::Ground;
+    std::string cursor_sequence_parameters_;
 
     WriteCallback write_callback_;
     struct tsm_screen* screen_ = nullptr;
     struct tsm_vte* vte_ = nullptr;
     std::string error_;
+    std::string title_;
+    TerminalCursorStyle cursor_style_ = TerminalCursorStyle::Block;
     bool selection_active_ = false;
     TerminalMetrics metrics_;
     std::chrono::steady_clock::time_point last_output_time_;

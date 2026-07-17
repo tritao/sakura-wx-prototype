@@ -1,7 +1,9 @@
 #include "terminal_core.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
+#include <string>
 #include <utility>
 
 TerminalCore::TerminalCore(WriteCallback write_callback)
@@ -22,6 +24,7 @@ TerminalCore::TerminalCore(WriteCallback write_callback)
     }
 
     tsm_vte_set_mouse_cb(vte_, &TerminalCore::VteMouse, this);
+    tsm_vte_set_osc_cb(vte_, &TerminalCore::VteOsc, this);
     tsm_vte_set_palette(vte_, "base16-dark");
 }
 
@@ -45,6 +48,7 @@ void TerminalCore::FeedOutput(const char* data, std::size_t length)
         ++metrics_.output_chunks;
         last_output_time_ = std::chrono::steady_clock::now();
         output_waiting_for_render_ = true;
+        TrackCursorStyle(data, length);
         tsm_vte_input(vte_, data, length);
     }
 }
@@ -190,20 +194,12 @@ TerminalSnapshot TerminalCore::TakeSnapshot()
     snapshot.cursor_y = tsm_screen_get_cursor_y(screen_);
     snapshot.cursor_visible = vte_ != nullptr &&
         (tsm_vte_get_flags(vte_) & TSM_VTE_FLAG_TEXT_CURSOR_MODE) != 0;
-
-    const struct tsm_screen_cell* cells = tsm_screen_draw2(screen_);
-    if (cells == nullptr)
-        return snapshot;
+    snapshot.cursor_style = cursor_style_;
+    snapshot.alternate_screen = (tsm_screen_get_flags(screen_) &
+                                 TSM_SCREEN_ALTERNATE) != 0;
 
     snapshot.cells.resize(snapshot.columns * snapshot.rows);
-    for (std::size_t index = 0; index < snapshot.cells.size(); ++index) {
-        TerminalCell& target = snapshot.cells[index];
-        const struct tsm_screen_cell& source = cells[index];
-        target.codepoint = source.ch;
-        target.foreground = {source.fg.r, source.fg.g, source.fg.b};
-        target.background = {source.bg.r, source.bg.g, source.bg.b};
-        target.attributes = source.attr2.u8;
-    }
+    tsm_screen_draw(screen_, &TerminalCore::DrawCell, &snapshot);
     return snapshot;
 }
 
@@ -224,4 +220,137 @@ void TerminalCore::VteMouse(struct tsm_vte*,
 {
     auto* core = static_cast<TerminalCore*>(user_data);
     ++core->metrics_.mouse_mode_changes;
+}
+
+int TerminalCore::DrawCell(struct tsm_screen*, uint64_t,
+                           const uint32_t* codepoints, std::size_t length,
+                           unsigned int width, unsigned int column,
+                           unsigned int row, const struct tsm_screen_attr* attr,
+                           tsm_age_t, void* user_data)
+{
+    auto* snapshot = static_cast<TerminalSnapshot*>(user_data);
+    if (snapshot == nullptr || column >= snapshot->columns ||
+        row >= snapshot->rows || attr == nullptr)
+        return 0;
+
+    TerminalCell& cell = snapshot->cells[row * snapshot->columns + column];
+    cell.text.clear();
+    cell.width = width;
+    cell.codepoint = width == 0 ? 0 : ' ';
+    for (std::size_t index = 0; index < length; ++index) {
+        char utf8[8] {};
+        const std::size_t utf8_length = tsm_ucs4_to_utf8(
+            codepoints[index], utf8);
+        cell.text.append(utf8, utf8_length);
+        if (index == 0)
+            cell.codepoint = codepoints[index];
+    }
+    if (length == 0 && width > 0)
+        cell.text = " ";
+
+    cell.attributes = 0;
+    if (attr->bold) cell.attributes |= 0x01;
+    if (attr->italic) cell.attributes |= 0x02;
+    if (attr->underline) cell.attributes |= 0x04;
+    if (attr->blink) cell.attributes |= 0x08;
+    if (attr->dim) cell.attributes |= 0x10;
+
+    std::array<uint8_t, 3> foreground {attr->fr, attr->fg, attr->fb};
+    std::array<uint8_t, 3> background {attr->br, attr->bg, attr->bb};
+    if (attr->inverse)
+        std::swap(foreground, background);
+    if (attr->dim) {
+        for (std::size_t index = 0; index < foreground.size(); ++index)
+            foreground[index] = static_cast<uint8_t>(
+                background[index] / 2 + foreground[index] / 2);
+    }
+    cell.foreground = foreground;
+    cell.background = background;
+    return 0;
+}
+
+void TerminalCore::VteOsc(struct tsm_vte*, const char* data,
+                          std::size_t length, void* user_data)
+{
+    auto* core = static_cast<TerminalCore*>(user_data);
+    if (data == nullptr || length < 2)
+        return;
+    const std::string sequence(data, length);
+    const std::size_t separator = sequence.find(';');
+    if (separator == std::string::npos)
+        return;
+    const std::string command = sequence.substr(0, separator);
+    if (command == "0" || command == "1" || command == "2") {
+        core->title_ = sequence.substr(separator + 1);
+        ++core->metrics_.title_changes;
+    }
+}
+
+void TerminalCore::TrackCursorStyle(const char* data, std::size_t length)
+{
+    for (std::size_t index = 0; index < length; ++index) {
+        const char ch = data[index];
+        switch (cursor_sequence_state_) {
+        case CursorSequenceState::Ground:
+            if (ch == '\x1b')
+                cursor_sequence_state_ = CursorSequenceState::Escape;
+            break;
+        case CursorSequenceState::Escape:
+            if (ch == '[') {
+                cursor_sequence_parameters_.clear();
+                cursor_sequence_state_ = CursorSequenceState::Csi;
+            } else if (ch != '\x1b') {
+                cursor_sequence_state_ = CursorSequenceState::Ground;
+            }
+            break;
+        case CursorSequenceState::Csi:
+            if ((ch >= '0' && ch <= '9') || ch == ';') {
+                if (cursor_sequence_parameters_.size() < 16)
+                    cursor_sequence_parameters_.push_back(ch);
+            } else if (ch == ' ') {
+                cursor_sequence_state_ = CursorSequenceState::CsiIntermediate;
+            } else {
+                cursor_sequence_state_ = ch == '\x1b'
+                    ? CursorSequenceState::Escape
+                    : CursorSequenceState::Ground;
+            }
+            break;
+        case CursorSequenceState::CsiIntermediate:
+            if (ch == 'q') {
+                unsigned int value = 0;
+                if (!cursor_sequence_parameters_.empty())
+                    value = static_cast<unsigned int>(
+                        std::strtoul(cursor_sequence_parameters_.c_str(), nullptr, 10));
+
+                TerminalCursorStyle style = cursor_style_;
+                switch (value) {
+                case 0:
+                case 1:
+                case 2:
+                    style = TerminalCursorStyle::Block;
+                    break;
+                case 3:
+                case 4:
+                    style = TerminalCursorStyle::Underline;
+                    break;
+                case 5:
+                case 6:
+                    style = TerminalCursorStyle::Bar;
+                    break;
+                default:
+                    break;
+                }
+                if (style != cursor_style_) {
+                    cursor_style_ = style;
+                    ++metrics_.cursor_style_changes;
+                }
+                cursor_sequence_state_ = CursorSequenceState::Ground;
+            } else {
+                cursor_sequence_state_ = ch == '\x1b'
+                    ? CursorSequenceState::Escape
+                    : CursorSequenceState::Ground;
+            }
+            break;
+        }
+    }
 }

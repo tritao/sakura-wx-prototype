@@ -107,15 +107,6 @@ private:
         transport_->Resize(columns_, rows_);
     }
 
-    static wxString CellText(uint32_t codepoint)
-    {
-        char utf8[8] {};
-        const std::size_t length = tsm_ucs4_to_utf8(codepoint, utf8);
-        if (length == 0)
-            return {};
-        return wxString::FromUTF8(utf8, length);
-    }
-
     static uint32_t KeySymFor(const wxKeyEvent& event)
     {
         switch (event.GetKeyCode()) {
@@ -161,18 +152,35 @@ private:
         for (unsigned int row = 0; row < snapshot.rows; ++row) {
             for (unsigned int column = 0; column < snapshot.columns; ++column) {
                 const auto& cell = snapshot.cells[row * snapshot.columns + column];
+                if (cell.width == 0)
+                    continue;
+                const unsigned int span = std::min(
+                    std::max(1u, cell.width), snapshot.columns - column);
                 dc.SetBrush(wxBrush(wxColour(cell.background[0], cell.background[1],
                                              cell.background[2])));
                 dc.DrawRectangle(column * cell_width_, row * cell_height_,
-                                 cell_width_, cell_height_);
+                                 span * cell_width_, cell_height_);
 
-                if (cell.codepoint == 0)
-                    continue;
                 dc.SetTextForeground(wxColour(cell.foreground[0], cell.foreground[1],
                                               cell.foreground[2]));
-                const wxString glyph = CellText(cell.codepoint);
-                if (!glyph.empty())
+                wxFont glyph_font = font_;
+                glyph_font.SetWeight((cell.attributes & 0x01) != 0
+                    ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
+                glyph_font.SetStyle((cell.attributes & 0x02) != 0
+                    ? wxFONTSTYLE_ITALIC : wxFONTSTYLE_NORMAL);
+                glyph_font.SetUnderlined((cell.attributes & 0x04) != 0);
+                dc.SetFont(glyph_font);
+                const wxString glyph = wxString::FromUTF8(cell.text);
+                if (!glyph.empty() && cell.text != " ")
                     dc.DrawText(glyph, column * cell_width_, row * cell_height_);
+                if ((cell.attributes & 0x04) != 0) {
+                    dc.SetPen(wxPen(wxColour(cell.foreground[0], cell.foreground[1],
+                                             cell.foreground[2]), 1));
+                    const int underline_y = (row + 1) * cell_height_ - 2;
+                    dc.DrawLine(column * cell_width_, underline_y,
+                                (column + span) * cell_width_ - 1, underline_y);
+                    dc.SetPen(*wxTRANSPARENT_PEN);
+                }
             }
         }
 
@@ -180,9 +188,22 @@ private:
             snapshot.cursor_y < snapshot.rows) {
             dc.SetBrush(*wxTRANSPARENT_BRUSH);
             dc.SetPen(wxPen(wxColour(230, 230, 230), 1));
-            dc.DrawRectangle(snapshot.cursor_x * cell_width_,
-                             snapshot.cursor_y * cell_height_,
-                             cell_width_, cell_height_);
+            const int cursor_x = snapshot.cursor_x * cell_width_;
+            const int cursor_y = snapshot.cursor_y * cell_height_;
+            switch (snapshot.cursor_style) {
+            case TerminalCursorStyle::Underline:
+                dc.DrawLine(cursor_x, cursor_y + cell_height_ - 2,
+                            cursor_x + cell_width_ - 1,
+                            cursor_y + cell_height_ - 2);
+                break;
+            case TerminalCursorStyle::Bar:
+                dc.DrawLine(cursor_x + 1, cursor_y + 1,
+                            cursor_x + 1, cursor_y + cell_height_ - 2);
+                break;
+            case TerminalCursorStyle::Block:
+                dc.DrawRectangle(cursor_x, cursor_y, cell_width_, cell_height_);
+                break;
+            }
         }
     }
 
@@ -472,9 +493,18 @@ private:
         return true;
     }
 
-    static wxString TransportTitle(const TransportStatus& status)
+    wxString TransportTitle(const TransportStatus& status) const
     {
-        const wxString base = "Sakura wx prototype — libtsm";
+        wxString base = "Sakura wx prototype — libtsm";
+        if (!core_.Title().empty()) {
+            wxString terminal_title = wxString::FromUTF8(core_.Title());
+            terminal_title.Replace("\r", " ");
+            terminal_title.Replace("\n", " ");
+            if (terminal_title.length() > 120)
+                terminal_title = terminal_title.Left(117) + "...";
+            if (!terminal_title.empty())
+                base += " — " + terminal_title;
+        }
         switch (status.state) {
         case TransportState::Running:
             return base;
@@ -550,10 +580,10 @@ private:
     void UpdateTransportStatus()
     {
         const TransportStatus status = transport_->GetStatus();
+        UpdateTransportTitle(status);
         if (status.state == last_transport_state_)
             return;
         last_transport_state_ = status.state;
-        UpdateTransportTitle(status);
         if (status.state == TransportState::Exited ||
             status.state == TransportState::Failed)
             ShowTransportNotice(status);

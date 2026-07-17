@@ -2,6 +2,7 @@
 
 #include <xkbcommon/xkbcommon-keysyms.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -72,6 +73,80 @@ int main()
               "line movement was not parsed correctly");
         Check((CellAt(snapshot, 0, 1).attributes & 0x04) != 0,
               "underline attribute was not preserved");
+
+        core.FeedOutput("\x1b]2;semantic title\x07", 19);
+        Check(core.Title() == "semantic title", "OSC title was not captured");
+        Check(core.GetMetrics().title_changes == 1,
+              "OSC title metric was not recorded");
+        Check(core.Resize(12, 3), "semantic resize failed");
+        snapshot = core.TakeSnapshot();
+        Check(snapshot.columns == 12 && snapshot.rows == 3,
+              "semantic resize dimensions are incorrect");
+
+        TerminalCore alternate_core(nullptr);
+        Check(alternate_core.Resize(20, 4), "alternate screen resize failed");
+        alternate_core.FeedOutput("base", 4);
+        alternate_core.FeedOutput("\x1b[?1049h", 8);
+        alternate_core.FeedOutput("alt", 3);
+        const TerminalSnapshot alternate_snapshot = alternate_core.TakeSnapshot();
+        Check(alternate_snapshot.alternate_screen,
+              "alternate screen mode was not detected");
+        Check(CellAt(alternate_snapshot, 4, 0).codepoint == 'a',
+              "alternate screen content was not isolated");
+        alternate_core.FeedOutput("\x1b[?1049l", 8);
+        const TerminalSnapshot main_snapshot = alternate_core.TakeSnapshot();
+        Check(!main_snapshot.alternate_screen &&
+                  CellAt(main_snapshot, 0, 0).codepoint == 'b',
+              "main screen was not restored after alternate screen");
+
+        std::string bracketed_writes;
+        TerminalCore semantic_core([&bracketed_writes](const char* data,
+                                                        std::size_t length) {
+            bracketed_writes.append(data, length);
+        });
+        Check(semantic_core.Resize(20, 3), "semantic core resize failed");
+        semantic_core.FeedOutput("\x1b[?2004h", 8);
+        semantic_core.Paste("clip");
+        Check(bracketed_writes == "\x1b[200~clip\x1b[201~",
+              "bracketed paste was not encoded");
+
+        TerminalCore style_core(nullptr);
+        Check(style_core.Resize(20, 3), "style core resize failed");
+        const char* style = "\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m\x1b[1;3;4mX";
+        style_core.FeedOutput(style, std::strlen(style));
+        const TerminalSnapshot style_snapshot = style_core.TakeSnapshot();
+        const TerminalCell& styled_cell = CellAt(style_snapshot, 0, 0);
+        Check(styled_cell.foreground == std::array<uint8_t, 3>{1, 2, 3} &&
+                  styled_cell.background == std::array<uint8_t, 3>{4, 5, 6},
+              "truecolor was not preserved");
+        Check((styled_cell.attributes & 0x01) != 0 &&
+                  (styled_cell.attributes & 0x02) != 0 &&
+                  (styled_cell.attributes & 0x04) != 0,
+              "bold italic underline attributes were not preserved");
+
+        TerminalCore cursor_core(nullptr);
+        Check(cursor_core.Resize(20, 3), "cursor core resize failed");
+        cursor_core.FeedOutput("\x1b[3", 3);
+        cursor_core.FeedOutput(" q", 2);
+        Check(cursor_core.TakeSnapshot().cursor_style ==
+                  TerminalCursorStyle::Underline,
+              "underline cursor style was not parsed");
+        cursor_core.FeedOutput("\x1b[6 q", 5);
+        Check(cursor_core.TakeSnapshot().cursor_style == TerminalCursorStyle::Bar,
+              "bar cursor style was not parsed");
+        Check(cursor_core.GetMetrics().cursor_style_changes == 2,
+              "cursor style metric was not recorded");
+
+        TerminalCore glyph_core(nullptr);
+        Check(glyph_core.Resize(20, 3), "glyph core resize failed");
+        const char* glyphs = "\xe7\x95\x8c" "e\xcc\x81";
+        glyph_core.FeedOutput(glyphs, std::strlen(glyphs));
+        const TerminalSnapshot glyph_snapshot = glyph_core.TakeSnapshot();
+        Check(CellAt(glyph_snapshot, 0, 0).text == "\xe7\x95\x8c" &&
+                  CellAt(glyph_snapshot, 0, 0).width == 2,
+              "wide glyph was not preserved");
+        Check(CellAt(glyph_snapshot, 2, 0).text == "e",
+              "UTF-8 base glyph was not preserved");
 
         TerminalCore unicode_core(nullptr);
         Check(unicode_core.Resize(20, 4), "unicode core resize failed");
