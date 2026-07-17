@@ -174,6 +174,48 @@ private:
 
         std::string expectation;
         command >> expectation;
+        if (expectation == "frame") {
+            std::string generation;
+            std::string changed;
+            std::string full_repaint;
+            std::string left;
+            std::string top;
+            std::string right;
+            std::string bottom;
+            command >> generation >> changed >> full_repaint >> left >> top
+                    >> right >> bottom;
+            const TerminalFrame frame = core_.TakeFrame();
+            const auto expected_generation =
+                static_cast<uint64_t>(ParseDecimal(generation,
+                                                    "frame generation"));
+            const bool expected_changed =
+                ParseDecimal(changed, "frame changed") != 0;
+            const bool expected_full_repaint =
+                ParseDecimal(full_repaint, "frame full repaint") != 0;
+            const TerminalDirtyRegion expected_dirty {
+                ParseDecimal(left, "dirty left"),
+                ParseDecimal(top, "dirty top"),
+                ParseDecimal(right, "dirty right"),
+                ParseDecimal(bottom, "dirty bottom")
+            };
+            if (frame.generation != expected_generation ||
+                frame.changed != expected_changed ||
+                frame.full_repaint != expected_full_repaint ||
+                frame.dirty.left != expected_dirty.left ||
+                frame.dirty.top != expected_dirty.top ||
+                frame.dirty.right != expected_dirty.right ||
+                frame.dirty.bottom != expected_dirty.bottom) {
+                std::ostringstream message;
+                message << "frame mismatch: generation " << frame.generation
+                        << ", changed " << frame.changed << ", full "
+                        << frame.full_repaint << ", dirty " << frame.dirty.left
+                        << ',' << frame.dirty.top << '-' << frame.dirty.right
+                        << ',' << frame.dirty.bottom;
+                throw std::runtime_error(message.str());
+            }
+            return;
+        }
+
         if (expectation == "cell") {
             std::string column;
             std::string row;

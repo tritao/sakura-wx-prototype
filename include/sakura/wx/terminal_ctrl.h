@@ -24,6 +24,8 @@ public:
 private:
     void UpdateGeometry();
     static uint32_t KeySymFor(const wxKeyEvent& event);
+    void RenderSnapshot(wxDC& dc, const TerminalSnapshot& snapshot,
+                        const TerminalDirtyRegion& dirty);
     void OnPaint(wxPaintEvent& event);
     void OnSize(wxSizeEvent& event);
     void OnChar(wxKeyEvent& event);

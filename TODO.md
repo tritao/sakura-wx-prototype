@@ -24,8 +24,9 @@ cross-platform terminal library and a Sakura frontend foundation.
 
 ## Rendering and performance
 
-- [ ] Add dirty-cell tracking.
-  - Avoid repainting unchanged cells.
+- [x] Add dirty-cell tracking.
+  - Expose libtsm ageing as generation-based dirty-frame metadata.
+  - Use a wx backing bitmap so unchanged cells are not redrawn.
   - Preserve correct invalidation for scrolling, selection, cursor, and resize.
 
 - [ ] Add glyph caching.

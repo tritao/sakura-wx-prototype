@@ -1,7 +1,10 @@
 # sakura-vt-replay v1
 # Payloads are hexadecimal bytes. Coordinates are zero-based.
 resize 20 4
+expect frame 1 1 1 0 0 20 4
+expect frame 1 0 0 0 0 0 0
 output 1b5b324a1b5b4868656c6c6f
+expect frame 2 1 1 0 0 20 4
 expect cell 0 0 68 1 68
 expect cell 4 0 6f 1 6f
 
@@ -9,6 +12,7 @@ output 1b5d323b7265706c61792073657373696f6e07
 expect title 7265706c61792073657373696f6e
 
 output e7958c65cc81
+expect frame 3 1 0 0 0 20 1
 expect cell 5 0 754c 2 e7958c
 expect cell 7 0 65 1 65cc81
 expect cursor 8 0 block

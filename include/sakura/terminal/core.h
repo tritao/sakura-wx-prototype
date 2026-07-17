@@ -63,6 +63,28 @@ struct TerminalSnapshot {
     std::vector<TerminalCell> cells;
 };
 
+struct TerminalDirtyRegion {
+    // The right and bottom edges are exclusive.
+    unsigned int left = 0;
+    unsigned int top = 0;
+    unsigned int right = 0;
+    unsigned int bottom = 0;
+
+    bool IsEmpty() const
+    {
+        return left >= right || top >= bottom;
+    }
+};
+
+struct TerminalFrame {
+    // A generation changes only when the rendered screen state changes.
+    uint64_t generation = 0;
+    bool changed = false;
+    bool full_repaint = false;
+    TerminalDirtyRegion dirty;
+    TerminalSnapshot snapshot;
+};
+
 struct TerminalMetrics {
     uint64_t output_bytes = 0;
     uint64_t output_chunks = 0;
@@ -122,6 +144,12 @@ public:
     bool HasSelection() const;
     std::string CopySelection();
 
+    // Returns a complete snapshot plus the region that changed since the
+    // previous frame. The snapshot remains complete so consumers can retain
+    // it as a backing store while only repainting dirty cells. The first
+    // frame, a resize, an alternate-screen switch, and age-counter rollover
+    // request a full repaint.
+    TerminalFrame TakeFrame();
     TerminalSnapshot TakeSnapshot();
     TerminalMetrics GetMetrics() const;
 

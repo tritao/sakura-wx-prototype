@@ -66,6 +66,33 @@ int main()
         Check(CellAt(snapshot, 4, 0).codepoint == 'o',
               "plain text placement is incorrect");
 
+        TerminalCore frame_core(nullptr);
+        Check(frame_core.Resize(10, 2), "dirty frame resize failed");
+        const TerminalFrame first_frame = frame_core.TakeFrame();
+        Check(first_frame.generation == 1 && first_frame.changed &&
+                  first_frame.full_repaint &&
+                  first_frame.dirty.left == 0 && first_frame.dirty.top == 0 &&
+                  first_frame.dirty.right == 10 && first_frame.dirty.bottom == 2,
+              "first frame did not request a full repaint");
+        const TerminalFrame clean_frame = frame_core.TakeFrame();
+        Check(clean_frame.generation == first_frame.generation &&
+                  !clean_frame.changed && clean_frame.dirty.IsEmpty(),
+              "unchanged frame was not reported as clean");
+        frame_core.FeedOutput("abc", 3);
+        const TerminalFrame changed_frame = frame_core.TakeFrame();
+        Check(changed_frame.generation > clean_frame.generation &&
+                  changed_frame.changed && !changed_frame.dirty.IsEmpty() &&
+                  changed_frame.dirty.left == 0 &&
+                  changed_frame.dirty.top == 0 &&
+                  changed_frame.dirty.right >= 3,
+              "output did not produce a dirty frame");
+        const char* frame_title = "\x1b]2;frame title\x07";
+        frame_core.FeedOutput(frame_title, std::strlen(frame_title));
+        const TerminalFrame title_frame = frame_core.TakeFrame();
+        Check(title_frame.generation == changed_frame.generation &&
+                  !title_frame.changed && title_frame.dirty.IsEmpty(),
+              "title-only output dirtied the screen frame");
+
         const std::string styled_text = "\r\n\x1b[4munder\x1b[0m";
         core.FeedOutput(styled_text.data(), styled_text.size());
         snapshot = core.TakeSnapshot();

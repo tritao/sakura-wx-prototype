@@ -5,6 +5,7 @@
 #include <wx/clipbrd.h>
 #include <wx/dataobj.h>
 #include <wx/dcbuffer.h>
+#include <wx/dcmemory.h>
 
 #include <algorithm>
 #include <cassert>
@@ -45,6 +46,8 @@ public:
     TerminalConfig config_;
     TerminalCallbacks callbacks_;
     wxFont font_;
+    wxBitmap framebuffer_;
+    bool framebuffer_valid_ = false;
     wxTimer output_timer_;
     std::unique_ptr<TerminalTransport> transport_;
     TerminalCore core_;
@@ -207,27 +210,32 @@ uint32_t WxTerminalCtrl::KeySymFor(const wxKeyEvent& event)
     return event.GetUnicodeKey();
 }
 
-void WxTerminalCtrl::OnPaint(wxPaintEvent&)
+void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
+                                    const TerminalSnapshot& snapshot,
+                                    const TerminalDirtyRegion& dirty)
 {
-    wxAutoBufferedPaintDC dc(this);
+    if (dirty.IsEmpty() || snapshot.columns == 0 || snapshot.rows == 0)
+        return;
+
+    const unsigned int left = std::min(dirty.left, snapshot.columns);
+    const unsigned int top = std::min(dirty.top, snapshot.rows);
+    const unsigned int right = std::min(dirty.right, snapshot.columns);
+    const unsigned int bottom = std::min(dirty.bottom, snapshot.rows);
+    if (left >= right || top >= bottom)
+        return;
+
     const auto& background = impl_->config_.background;
-    dc.SetBackground(wxBrush(wxColour(background[0], background[1],
-                                       background[2])));
-    dc.Clear();
+    const wxBrush background_brush(wxColour(background[0], background[1],
+                                             background[2]));
+    dc.SetPen(*wxTRANSPARENT_PEN);
+    dc.SetBrush(background_brush);
+    dc.DrawRectangle(left * impl_->cell_width_, top * impl_->cell_height_,
+                     (right - left) * impl_->cell_width_,
+                     (bottom - top) * impl_->cell_height_);
     dc.SetFont(impl_->font_);
 
-    if (!impl_->core_.IsReady()) {
-        const auto& error_foreground = impl_->config_.error_foreground;
-        dc.SetTextForeground(wxColour(error_foreground[0], error_foreground[1],
-                                      error_foreground[2]));
-        dc.DrawText(impl_->error_, 12, 12);
-        return;
-    }
-
-    const TerminalSnapshot snapshot = impl_->core_.TakeSnapshot();
-    dc.SetPen(*wxTRANSPARENT_PEN);
-    for (unsigned int row = 0; row < snapshot.rows; ++row) {
-        for (unsigned int column = 0; column < snapshot.columns; ++column) {
+    for (unsigned int row = top; row < bottom; ++row) {
+        for (unsigned int column = left; column < right; ++column) {
             const auto& cell = snapshot.cells[row * snapshot.columns + column];
             if (cell.width == 0)
                 continue;
@@ -261,8 +269,11 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         }
     }
 
-    if (snapshot.cursor_visible && snapshot.cursor_x < snapshot.columns &&
-        snapshot.cursor_y < snapshot.rows) {
+    const bool cursor_in_dirty_region =
+        snapshot.cursor_x >= left && snapshot.cursor_x < right &&
+        snapshot.cursor_y >= top && snapshot.cursor_y < bottom;
+    if (cursor_in_dirty_region && snapshot.cursor_visible &&
+        snapshot.cursor_x < snapshot.columns && snapshot.cursor_y < snapshot.rows) {
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
         dc.SetPen(wxPen(wxColour(230, 230, 230), 1));
         const int cursor_x = snapshot.cursor_x * impl_->cell_width_;
@@ -282,6 +293,53 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
             break;
         }
     }
+}
+
+void WxTerminalCtrl::OnPaint(wxPaintEvent&)
+{
+    wxAutoBufferedPaintDC dc(this);
+    const auto& background = impl_->config_.background;
+    dc.SetBackground(wxBrush(wxColour(background[0], background[1],
+                                       background[2])));
+
+    if (!impl_->core_.IsReady()) {
+        dc.Clear();
+        const auto& error_foreground = impl_->config_.error_foreground;
+        dc.SetTextForeground(wxColour(error_foreground[0], error_foreground[1],
+                                      error_foreground[2]));
+        dc.DrawText(impl_->error_, 12, 12);
+        return;
+    }
+
+    const TerminalFrame frame = impl_->core_.TakeFrame();
+    const wxSize client_size = GetClientSize();
+    const int bitmap_width = std::max(1, client_size.GetWidth());
+    const int bitmap_height = std::max(1, client_size.GetHeight());
+    if (!impl_->framebuffer_.IsOk() ||
+        impl_->framebuffer_.GetWidth() != bitmap_width ||
+        impl_->framebuffer_.GetHeight() != bitmap_height) {
+        impl_->framebuffer_ = wxBitmap(bitmap_width, bitmap_height, -1);
+        impl_->framebuffer_valid_ = false;
+    }
+
+    wxMemoryDC framebuffer_dc;
+    framebuffer_dc.SelectObject(impl_->framebuffer_);
+    if (!impl_->framebuffer_valid_ || frame.full_repaint) {
+        framebuffer_dc.SetBackground(wxBrush(wxColour(background[0],
+                                                       background[1],
+                                                       background[2])));
+        framebuffer_dc.Clear();
+        const TerminalDirtyRegion full_region {
+            0, 0, frame.snapshot.columns, frame.snapshot.rows
+        };
+        RenderSnapshot(framebuffer_dc, frame.snapshot, full_region);
+        impl_->framebuffer_valid_ = true;
+    } else if (frame.changed) {
+        RenderSnapshot(framebuffer_dc, frame.snapshot, frame.dirty);
+    }
+    framebuffer_dc.SelectObject(wxNullBitmap);
+
+    dc.DrawBitmap(impl_->framebuffer_, 0, 0, false);
 }
 
 void WxTerminalCtrl::OnSize(wxSizeEvent& event)
