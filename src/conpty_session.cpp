@@ -7,21 +7,6 @@
 #endif
 #include <windows.h>
 
-#if defined(__has_include)
-#if __has_include(<winconpty.h>)
-#include <winconpty.h>
-#else
-DECLARE_HANDLE(HPCON);
-extern "C" HRESULT WINAPI CreatePseudoConsole(
-    COORD size, HANDLE hInput, HANDLE hOutput, DWORD dwFlags,
-    HPCON* phPC);
-extern "C" HRESULT WINAPI ResizePseudoConsole(HPCON hPC, COORD size);
-extern "C" void WINAPI ClosePseudoConsole(HPCON hPC);
-#endif
-#else
-#include <winconpty.h>
-#endif
-
 #include <algorithm>
 #include <chrono>
 #include <string>
