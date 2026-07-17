@@ -62,9 +62,9 @@ int main()
 
 #if defined(_WIN32)
         const std::string old_command =
-            "echo sakura-old-session\r\nexit\r\n";
+            "echo sakura-old-session\rexit\r";
         const std::string new_command =
-            "echo sakura-new-session\r\nexit\r\n";
+            "echo sakura-new-session\rexit\r";
 #else
         const std::string old_command =
             "printf 'sakura-old-session\\n'; exit\n";

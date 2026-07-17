@@ -24,7 +24,7 @@ int main()
         Check(transport->Start(80, 24, ""), "transport failed to start");
 
 #if defined(_WIN32)
-        const std::string command = "echo transport-smoke\r\nexit\r\n";
+        const std::string command = "echo transport-smoke\rexit\r";
 #else
         const std::string command = "printf 'transport-smoke\\n'; exit\n";
 #endif
