@@ -14,6 +14,29 @@ void Check(bool condition, const char* message)
         throw std::runtime_error(message);
 }
 
+void PrintDiagnostics(const std::string& output,
+                     const TransportStatus& status,
+                     const TransportMetrics& metrics)
+{
+    std::cerr << "captured bytes=" << output.size()
+              << " state=" << static_cast<int>(status.state)
+              << " exit_code=" << status.exit_code
+              << " exit_code_valid=" << status.exit_code_valid
+              << " bytes_read=" << metrics.bytes_read
+              << " read_events=" << metrics.read_events
+              << " bytes_written=" << metrics.bytes_written
+              << " write_events=" << metrics.write_events << '\n';
+    std::cerr << "captured output: ";
+    for (unsigned char byte : output) {
+        if (byte >= 0x20 && byte < 0x7f)
+            std::cerr << static_cast<char>(byte);
+        else
+            std::cerr << "\\x" << std::hex << static_cast<int>(byte)
+                      << std::dec;
+    }
+    std::cerr << '\n';
+}
+
 } // namespace
 
 int main()
@@ -47,6 +70,12 @@ int main()
         const TransportStatus status = transport->GetStatus();
         const TransportMetrics metrics = transport->GetMetrics();
         transport->Stop();
+        if (output.find("transport-smoke") == std::string::npos ||
+            !(status.state == TransportState::Exited &&
+              status.exit_code_valid && status.exit_code == 0) ||
+            !(metrics.bytes_read > 0 && metrics.read_events > 0)) {
+            PrintDiagnostics(output, status, metrics);
+        }
         Check(output.find("transport-smoke") != std::string::npos,
               "transport output did not contain the marker");
         Check(status.state == TransportState::Exited &&

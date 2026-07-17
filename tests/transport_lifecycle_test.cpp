@@ -36,6 +36,27 @@ std::string DrainOutput(TerminalTransport& transport)
     return output;
 }
 
+void PrintDiagnostics(const char* label, const std::string& output,
+                      const TransportStatus& status,
+                      const TransportMetrics& metrics)
+{
+    std::cerr << label << ": captured bytes=" << output.size()
+              << " state=" << static_cast<int>(status.state)
+              << " exit_code=" << status.exit_code
+              << " exit_code_valid=" << status.exit_code_valid
+              << " bytes_read=" << metrics.bytes_read
+              << " read_events=" << metrics.read_events << '\n';
+    std::cerr << label << ": captured output: ";
+    for (unsigned char byte : output) {
+        if (byte >= 0x20 && byte < 0x7f)
+            std::cerr << static_cast<char>(byte);
+        else
+            std::cerr << "\\x" << std::hex << static_cast<int>(byte)
+                      << std::dec;
+    }
+    std::cerr << '\n';
+}
+
 } // namespace
 
 int main()
@@ -78,6 +99,11 @@ int main()
         Check(transport->Write(old_command.data(), old_command.size()),
               "could not write the first restart command");
         const TransportStatus old_status = WaitForTerminalState(*transport);
+        if (old_status.state != TransportState::Exited) {
+            const auto old_metrics = transport->GetMetrics();
+            PrintDiagnostics("first restart session", DrainOutput(*transport),
+                             old_status, old_metrics);
+        }
         Check(old_status.state == TransportState::Exited,
               "first restart session did not exit");
 
