@@ -9,7 +9,9 @@
 #include <winconpty.h>
 
 #include <algorithm>
+#include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -46,6 +48,18 @@ std::wstring DefaultShell()
     return L"C:\\Windows\\System32\\cmd.exe";
 }
 
+void RecordExitCode(std::atomic<int>& exit_code,
+                    std::atomic<bool>& exit_code_valid,
+                    HANDLE process)
+{
+    DWORD code = STILL_ACTIVE;
+    if (process != nullptr && GetExitCodeProcess(process, &code) &&
+        code != STILL_ACTIVE) {
+        exit_code.store(static_cast<int>(code));
+        exit_code_valid.store(true);
+    }
+}
+
 } // namespace
 
 #endif
@@ -59,6 +73,10 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
                            const std::string& shell)
 {
     Stop();
+    state_.store(TransportState::Starting);
+    exit_code_.store(-1);
+    exit_signal_.store(0);
+    exit_code_valid_.store(false);
 
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES security_attributes {};
@@ -75,6 +93,7 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         if (input_write) CloseHandle(input_write);
         if (output_read) CloseHandle(output_read);
         if (output_write) CloseHandle(output_write);
+        state_.store(TransportState::Failed);
         return false;
     }
 
@@ -90,6 +109,7 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
     if (FAILED(console_result)) {
         CloseHandle(input_write);
         CloseHandle(output_read);
+        state_.store(TransportState::Failed);
         return false;
     }
 
@@ -99,6 +119,7 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         ClosePseudoConsole(pseudo_console);
         CloseHandle(input_write);
         CloseHandle(output_read);
+        state_.store(TransportState::Failed);
         return false;
     }
     std::vector<unsigned char> attribute_buffer(attribute_size);
@@ -108,6 +129,7 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         ClosePseudoConsole(pseudo_console);
         CloseHandle(input_write);
         CloseHandle(output_read);
+        state_.store(TransportState::Failed);
         return false;
     }
     if (!UpdateProcThreadAttribute(attributes, 0,
@@ -118,6 +140,7 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         ClosePseudoConsole(pseudo_console);
         CloseHandle(input_write);
         CloseHandle(output_read);
+        state_.store(TransportState::Failed);
         return false;
     }
 
@@ -142,6 +165,7 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         ClosePseudoConsole(pseudo_console);
         CloseHandle(input_write);
         CloseHandle(output_read);
+        state_.store(TransportState::Failed);
         return false;
     }
 
@@ -154,12 +178,14 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
     }
     stop_requested_.store(false);
     running_.store(true);
+    state_.store(TransportState::Running);
     reader_thread_ = std::thread(&ConPtySession::ReadLoop, this, output_read);
     return true;
 #else
     (void)columns;
     (void)rows;
     (void)shell;
+    state_.store(TransportState::Failed);
     return false;
 #endif
 }
@@ -197,6 +223,7 @@ void ConPtySession::Stop()
         ClosePseudoConsole(pseudo_console);
     if (process != nullptr) {
         WaitForSingleObject(process, 2000);
+        RecordExitCode(exit_code_, exit_code_valid_, process);
         CloseHandle(process);
     }
 #else
@@ -204,6 +231,9 @@ void ConPtySession::Stop()
         reader_thread_.join();
 #endif
     running_.store(false);
+    const TransportState state = state_.load();
+    if (state == TransportState::Starting || state == TransportState::Running)
+        state_.store(TransportState::Stopped);
 }
 
 bool ConPtySession::Write(const char* data, std::size_t length)
@@ -282,6 +312,16 @@ TransportMetrics ConPtySession::GetMetrics() const
     };
 }
 
+TransportStatus ConPtySession::GetStatus() const
+{
+    return {
+        state_.load(),
+        exit_code_.load(),
+        exit_signal_.load(),
+        exit_code_valid_.load(),
+    };
+}
+
 void ConPtySession::ReadLoop(void* output_handle)
 {
 #if defined(_WIN32)
@@ -304,5 +344,21 @@ void ConPtySession::ReadLoop(void* output_handle)
 #else
     (void)output_handle;
 #endif
+    if (!stop_requested_.load()) {
+#if defined(_WIN32)
+        HANDLE process = nullptr;
+        {
+            std::lock_guard lock(io_mutex_);
+            process = static_cast<HANDLE>(process_handle_);
+        }
+        while (process != nullptr && !stop_requested_.load() &&
+               WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!stop_requested_.load())
+            RecordExitCode(exit_code_, exit_code_valid_, process);
+        state_.store(TransportState::Exited);
+#endif
+    }
     running_.store(false);
 }

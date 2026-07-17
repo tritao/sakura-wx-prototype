@@ -7,6 +7,7 @@ The prototype currently provides:
 - wxWidgets window and custom terminal-cell drawing;
 - libtsm VT parsing, colors, cursor, scrollback, keyboard handling, and palette;
 - mouse drag selection, clipboard copy/paste, and core/transport telemetry;
+- process lifecycle state, exit status, visible exit notices, and `Ctrl+Shift+R` restart;
 - a POSIX `forkpty()` process bridge, including macOS, with shell resize and output polling;
 - a Windows ConPTY process bridge selected automatically by the transport factory;
 - pinned source submodules for wxWidgets and libtsm.
@@ -72,7 +73,7 @@ For an instrumented run with AddressSanitizer and UndefinedBehaviorSanitizer:
 BUILD_DIR=build-sanitize SAKURA_ENABLE_SANITIZERS=ON RUN_TESTS=1 ./build.sh
 ```
 
-The core tests use semantic screen snapshots, while the PTY test exercises burst output, repeated resize, child completion, and shutdown. The wx smoke test runs the real window under Xvfb when available.
+The core tests use semantic screen snapshots, while the PTY stress test exercises burst output, repeated resize, child completion, and shutdown. Transport lifecycle tests cover clean exit and failed shell startup. The wx smoke and UX tests run the real window under Xvfb when available.
 
 Set `SAKURA_TRACE_METRICS=1` when running the app to print periodic output,
 input, rendering latency, clipboard, transport queue, and resize counters:
@@ -85,9 +86,8 @@ wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidget
 
 ## Follow-up work
 
-1. Add explicit child-exit state and reconnect/close UX.
-2. Expand semantic VT cases and scripted mouse/keyboard latency thresholds.
-3. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
-4. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
+1. Expand semantic VT cases and scripted mouse/keyboard latency thresholds.
+2. Exercise ConPTY natively in Windows CI and add macOS-specific PTY cases.
+3. Benchmark libtsm against libghostty-vt behind the same terminal-core contract.
 
 The vendored third-party code remains under its upstream licenses. See `third_party/libtsm/COPYING` and `third_party/wxWidgets/docs/licence.txt`.

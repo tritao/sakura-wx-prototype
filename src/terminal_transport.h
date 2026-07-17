@@ -14,6 +14,21 @@ struct TransportMetrics {
     uint64_t max_queued_bytes = 0;
 };
 
+enum class TransportState {
+    Stopped,
+    Starting,
+    Running,
+    Exited,
+    Failed,
+};
+
+struct TransportStatus {
+    TransportState state = TransportState::Stopped;
+    int exit_code = -1;
+    int signal = 0;
+    bool exit_code_valid = false;
+};
+
 class TerminalTransport {
 public:
     virtual ~TerminalTransport() = default;
@@ -25,5 +40,6 @@ public:
     virtual bool Resize(unsigned int columns, unsigned int rows) = 0;
     virtual std::vector<std::string> TakeOutput() = 0;
     virtual bool IsRunning() const = 0;
+    virtual TransportStatus GetStatus() const = 0;
     virtual TransportMetrics GetMetrics() const = 0;
 };

@@ -3,6 +3,7 @@
 #if defined(SAKURA_WX_POSIX)
 
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,22 @@ void RecordMaximum(std::atomic<uint64_t>& maximum, uint64_t value)
     }
 }
 
+void RecordExitStatus(std::atomic<int>& exit_code,
+                      std::atomic<int>& exit_signal,
+                      std::atomic<bool>& exit_code_valid,
+                      int status)
+{
+    if (WIFEXITED(status)) {
+        exit_code.store(WEXITSTATUS(status));
+        exit_signal.store(0);
+        exit_code_valid.store(true);
+    } else if (WIFSIGNALED(status)) {
+        exit_code.store(-1);
+        exit_signal.store(WTERMSIG(status));
+        exit_code_valid.store(true);
+    }
+}
+
 } // namespace
 
 #endif
@@ -42,6 +59,10 @@ bool PosixPtySession::Start(unsigned int columns, unsigned int rows,
                             const std::string& shell)
 {
     Stop();
+    state_.store(TransportState::Starting);
+    exit_code_.store(-1);
+    exit_signal_.store(0);
+    exit_code_valid_.store(false);
 
 #if defined(SAKURA_WX_POSIX)
     struct winsize size {};
@@ -50,8 +71,10 @@ bool PosixPtySession::Start(unsigned int columns, unsigned int rows,
 
     int master = -1;
     const pid_t child = forkpty(&master, nullptr, nullptr, &size);
-    if (child < 0)
+    if (child < 0) {
+        state_.store(TransportState::Failed);
         return false;
+    }
 
     if (child == 0) {
         ::setenv("TERM", "xterm-256color", 1);
@@ -73,12 +96,14 @@ bool PosixPtySession::Start(unsigned int columns, unsigned int rows,
 
     stop_requested_.store(false);
     running_.store(true);
+    state_.store(TransportState::Running);
     reader_thread_ = std::thread(&PosixPtySession::ReadLoop, this, master);
     return true;
 #else
     (void)columns;
     (void)rows;
     (void)shell;
+    state_.store(TransportState::Failed);
     return false;
 #endif
 }
@@ -114,7 +139,11 @@ void PosixPtySession::Stop()
         const pid_t result = ::waitpid(static_cast<pid_t>(child), &status, WNOHANG);
         if (result == 0) {
             ::kill(static_cast<pid_t>(child), SIGTERM);
-            ::waitpid(static_cast<pid_t>(child), &status, 0);
+            const pid_t waited = ::waitpid(static_cast<pid_t>(child), &status, 0);
+            if (waited == static_cast<pid_t>(child))
+                RecordExitStatus(exit_code_, exit_signal_, exit_code_valid_, status);
+        } else if (result == static_cast<pid_t>(child)) {
+            RecordExitStatus(exit_code_, exit_signal_, exit_code_valid_, status);
         }
     }
 #else
@@ -123,6 +152,9 @@ void PosixPtySession::Stop()
 #endif
 
     running_.store(false);
+    const TransportState state = state_.load();
+    if (state == TransportState::Starting || state == TransportState::Running)
+        state_.store(TransportState::Stopped);
 }
 
 bool PosixPtySession::Write(const char* data, std::size_t length)
@@ -200,6 +232,16 @@ TransportMetrics PosixPtySession::GetMetrics() const
     };
 }
 
+TransportStatus PosixPtySession::GetStatus() const
+{
+    return {
+        state_.load(),
+        exit_code_.load(),
+        exit_signal_.load(),
+        exit_code_valid_.load(),
+    };
+}
+
 void PosixPtySession::ReadLoop(int fd)
 {
 #if defined(SAKURA_WX_POSIX)
@@ -234,6 +276,29 @@ void PosixPtySession::ReadLoop(int fd)
     }
 #else
     (void)fd;
+#endif
+#if defined(SAKURA_WX_POSIX)
+    if (!stop_requested_.load()) {
+        int child = -1;
+        {
+            std::lock_guard lock(io_mutex_);
+            child = child_pid_;
+        }
+        if (child > 0) {
+            for (;;) {
+                int status = 0;
+                const pid_t result = ::waitpid(static_cast<pid_t>(child), &status, WNOHANG);
+                if (result == static_cast<pid_t>(child)) {
+                    RecordExitStatus(exit_code_, exit_signal_, exit_code_valid_, status);
+                    break;
+                }
+                if (result < 0 || stop_requested_.load())
+                    break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+        state_.store(TransportState::Exited);
+    }
 #endif
     running_.store(false);
 }

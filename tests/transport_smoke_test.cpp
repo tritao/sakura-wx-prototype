@@ -37,15 +37,20 @@ int main()
         while (std::chrono::steady_clock::now() < deadline) {
             for (const auto& chunk : transport->TakeOutput())
                 output += chunk;
-            if (output.find("transport-smoke") != std::string::npos)
+            if (output.find("transport-smoke") != std::string::npos &&
+                transport->GetStatus().state == TransportState::Exited)
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
+        const TransportStatus status = transport->GetStatus();
         const TransportMetrics metrics = transport->GetMetrics();
         transport->Stop();
         Check(output.find("transport-smoke") != std::string::npos,
               "transport output did not contain the marker");
+        Check(status.state == TransportState::Exited &&
+                  status.exit_code_valid && status.exit_code == 0,
+              "transport did not report a clean process exit");
         Check(metrics.bytes_read > 0 && metrics.read_events > 0,
               "transport read metrics were not recorded");
 

@@ -135,6 +135,13 @@ if(BUILD_TESTING)
     add_test(NAME transport_smoke COMMAND sakura_transport_smoke_test)
     set_tests_properties(transport_smoke PROPERTIES TIMEOUT 15)
 
+    add_executable(sakura_transport_lifecycle_test
+        tests/transport_lifecycle_test.cpp
+    )
+    target_link_libraries(sakura_transport_lifecycle_test PRIVATE sakura_transport)
+    add_test(NAME transport_lifecycle COMMAND sakura_transport_lifecycle_test)
+    set_tests_properties(transport_lifecycle PROPERTIES TIMEOUT 10)
+
     if(UNIX)
         add_executable(sakura_pty_stress_test
             tests/pty_stress_test.cpp
@@ -171,5 +178,6 @@ if(BUILD_TESTING)
             sakura_enable_sanitizers(sakura_pty_stress_test)
         endif()
         sakura_enable_sanitizers(sakura_transport_smoke_test)
+        sakura_enable_sanitizers(sakura_transport_lifecycle_test)
     endif()
 endif()

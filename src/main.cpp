@@ -63,6 +63,11 @@ public:
                 "the platform process backend.\r\n";
             core_.FeedOutput(notice, std::strlen(notice));
         }
+        const TransportStatus initial_status = transport_->GetStatus();
+        last_transport_state_ = initial_status.state == TransportState::Failed
+            ? TransportState::Failed
+            : TransportState::Stopped;
+        UpdateTransportTitle(initial_status);
         trace_metrics_ = std::getenv("SAKURA_TRACE_METRICS") != nullptr;
         last_metrics_log_ = std::chrono::steady_clock::now();
         output_timer_.Start(16);
@@ -191,7 +196,13 @@ private:
                               unicode == 'C' || key == 3;
         const bool paste_key = key == 'v' || key == 'V' || unicode == 'v' ||
                                unicode == 'V' || key == 22;
+        const bool restart_key = key == 'r' || key == 'R' || unicode == 'r' ||
+                                 unicode == 'R' || key == 18;
         if ((event.ControlDown() || event.MetaDown()) && event.ShiftDown()) {
+            if (restart_key) {
+                RestartTransport();
+                return;
+            }
             if (copy_key) {
                 CopySelectionToClipboard();
                 return;
@@ -296,6 +307,94 @@ private:
         return true;
     }
 
+    static wxString TransportTitle(const TransportStatus& status)
+    {
+        const wxString base = "Sakura wx prototype — libtsm";
+        switch (status.state) {
+        case TransportState::Running:
+            return base;
+        case TransportState::Exited:
+            if (status.exit_code_valid && status.signal == 0)
+                return base + wxString::Format(" [process exited %d]", status.exit_code);
+            if (status.exit_code_valid && status.signal != 0)
+                return base + wxString::Format(" [process terminated by signal %d]",
+                                               status.signal);
+            return base + " [process exited]";
+        case TransportState::Failed:
+            return base + " [transport failed]";
+        case TransportState::Starting:
+            return base + " [starting]";
+        case TransportState::Stopped:
+            return base + " [stopped]";
+        }
+        return base;
+    }
+
+    void UpdateTransportTitle(const TransportStatus& status)
+    {
+        auto* frame = wxDynamicCast(GetParent(), wxFrame);
+        if (frame != nullptr)
+            frame->SetTitle(TransportTitle(status));
+    }
+
+    void ShowTransportNotice(const TransportStatus& status)
+    {
+        std::string notice = "\r\n\x1b[1;33m[terminal process ";
+        switch (status.state) {
+        case TransportState::Running:
+            notice += "started";
+            break;
+        case TransportState::Exited:
+            notice += "exited";
+            if (status.exit_code_valid && status.signal == 0)
+                notice += " with code " + std::to_string(status.exit_code);
+            else if (status.exit_code_valid && status.signal != 0)
+                notice += " on signal " + std::to_string(status.signal);
+            break;
+        case TransportState::Failed:
+            notice += "failed to start";
+            break;
+        case TransportState::Starting:
+            notice += "starting";
+            break;
+        case TransportState::Stopped:
+            notice += "stopped";
+            break;
+        }
+        notice += "]\x1b[0m\r\n";
+        core_.FeedOutput(notice.data(), notice.size());
+    }
+
+    void RestartTransport()
+    {
+        transport_->Stop();
+        core_.ClearSelection();
+        const char* shell = std::getenv("SHELL");
+        transport_->Start(columns_, rows_, shell == nullptr ? "" : shell);
+        const char* clear = "\x1b[2J\x1b[H";
+        core_.FeedOutput(clear, std::strlen(clear));
+        const TransportStatus status = transport_->GetStatus();
+        ShowTransportNotice(status);
+        last_transport_state_ = status.state == TransportState::Failed
+            ? TransportState::Failed
+            : TransportState::Stopped;
+        UpdateTransportTitle(status);
+        Refresh(false);
+    }
+
+    void UpdateTransportStatus()
+    {
+        const TransportStatus status = transport_->GetStatus();
+        if (status.state == last_transport_state_)
+            return;
+        last_transport_state_ = status.state;
+        UpdateTransportTitle(status);
+        if (status.state == TransportState::Exited ||
+            status.state == TransportState::Failed)
+            ShowTransportNotice(status);
+        Refresh(false);
+    }
+
 public:
     bool RunScenario()
     {
@@ -330,6 +429,7 @@ private:
             core_.FeedOutput(chunk.data(), chunk.size());
         if (!output.empty())
             Refresh(false);
+        UpdateTransportStatus();
 
         if (trace_metrics_) {
             const auto now = std::chrono::steady_clock::now();
@@ -372,6 +472,7 @@ private:
     unsigned int rows_ = 24;
     bool selection_dragging_ = false;
     bool trace_metrics_ = false;
+    TransportState last_transport_state_ = TransportState::Stopped;
     std::chrono::steady_clock::time_point last_metrics_log_;
 };
 

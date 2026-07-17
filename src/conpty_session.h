@@ -25,6 +25,7 @@ public:
     bool Resize(unsigned int columns, unsigned int rows) override;
     std::vector<std::string> TakeOutput() override;
     bool IsRunning() const override { return running_.load(); }
+    TransportStatus GetStatus() const override;
     TransportMetrics GetMetrics() const override;
 
 private:
@@ -32,6 +33,10 @@ private:
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};
+    std::atomic<TransportState> state_{TransportState::Stopped};
+    std::atomic<int> exit_code_{-1};
+    std::atomic<int> exit_signal_{0};
+    std::atomic<bool> exit_code_valid_{false};
     std::atomic<uint64_t> bytes_read_{0};
     std::atomic<uint64_t> read_events_{0};
     std::atomic<uint64_t> bytes_written_{0};
