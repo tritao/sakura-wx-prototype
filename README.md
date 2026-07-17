@@ -44,6 +44,15 @@ cmake --build build -j
 ./build/sakura-wx-prototype
 ```
 
+The same workflow is available through the convenience scripts:
+
+```sh
+./build.sh
+./run.sh
+```
+
+`BUILD_TYPE`, `BUILD_DIR`, and `JOBS` can be overridden as environment variables.
+
 wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidgets CMake/MSVC toolchain; on macOS, use Xcode command-line tools and CMake.
 
 ## Next plan
