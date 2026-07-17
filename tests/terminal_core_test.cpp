@@ -252,6 +252,40 @@ int main()
         Check(metrics.selection_copies == 1 && metrics.paste_bytes == 6,
               "selection metrics were not recorded");
 
+        TerminalCore selection_frame_core(nullptr);
+        Check(selection_frame_core.Resize(30, 6),
+              "selection frame core resize failed");
+        const char* selection_frame_text = "selection repaint range";
+        selection_frame_core.FeedOutput(selection_frame_text,
+                                         std::strlen(selection_frame_text));
+        selection_frame_core.TakeFrame();
+        selection_frame_core.StartSelection(0, 0);
+        selection_frame_core.UpdateSelection(8, 0);
+        const TerminalFrame selected_frame = selection_frame_core.TakeFrame();
+        Check(selected_frame.changed && !selected_frame.full_repaint &&
+                  selected_frame.dirty.top == 0 &&
+                  selected_frame.dirty.bottom == 1 &&
+                  selected_frame.dirty.left == 0 &&
+                  selected_frame.dirty.right >= 9,
+              "selection change requested a full repaint");
+        selection_frame_core.ClearSelection();
+        const TerminalFrame cleared_selection_frame =
+            selection_frame_core.TakeFrame();
+        Check(cleared_selection_frame.changed &&
+                  !cleared_selection_frame.full_repaint &&
+                  cleared_selection_frame.dirty.top == 0 &&
+                  cleared_selection_frame.dirty.bottom == 1,
+              "clearing selection requested a full repaint");
+        selection_frame_core.StartSelection(0, 0);
+        selection_frame_core.UpdateSelection(2, 1);
+        const TerminalFrame multiline_selection_frame =
+            selection_frame_core.TakeFrame();
+        Check(multiline_selection_frame.changed &&
+                  !multiline_selection_frame.full_repaint &&
+                  multiline_selection_frame.dirty.top == 0 &&
+                  multiline_selection_frame.dirty.bottom == 2,
+              "multiline selection requested a full repaint");
+
         TerminalCore selection_behavior_core(nullptr);
         Check(selection_behavior_core.Resize(30, 6),
               "selection behavior core resize failed");
