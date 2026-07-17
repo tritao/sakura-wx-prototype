@@ -8,6 +8,7 @@
 #include <wx/dcmemory.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -46,6 +48,9 @@ public:
     TerminalConfig config_;
     TerminalCallbacks callbacks_;
     wxFont font_;
+    std::array<wxFont, 8> glyph_fonts_;
+    std::array<bool, 8> glyph_fonts_valid_ {};
+    std::unordered_map<std::string, wxString> glyph_texts_;
     wxBitmap framebuffer_;
     bool framebuffer_valid_ = false;
     wxTimer output_timer_;
@@ -210,6 +215,35 @@ uint32_t WxTerminalCtrl::KeySymFor(const wxKeyEvent& event)
     return event.GetUnicodeKey();
 }
 
+const wxFont& WxTerminalCtrl::GlyphFont(uint8_t attributes)
+{
+    const std::size_t index = attributes & 0x07;
+    if (!impl_->glyph_fonts_valid_[index]) {
+        wxFont& glyph_font = impl_->glyph_fonts_[index];
+        glyph_font = impl_->font_;
+        glyph_font.SetWeight((attributes & 0x01) != 0
+            ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
+        glyph_font.SetStyle((attributes & 0x02) != 0
+            ? wxFONTSTYLE_ITALIC : wxFONTSTYLE_NORMAL);
+        glyph_font.SetUnderlined((attributes & 0x04) != 0);
+        impl_->glyph_fonts_valid_[index] = true;
+    }
+    return impl_->glyph_fonts_[index];
+}
+
+const wxString& WxTerminalCtrl::GlyphText(const std::string& text)
+{
+    constexpr std::size_t max_glyph_texts = 4096;
+    const auto existing = impl_->glyph_texts_.find(text);
+    if (existing != impl_->glyph_texts_.end())
+        return existing->second;
+    if (impl_->glyph_texts_.size() >= max_glyph_texts)
+        impl_->glyph_texts_.clear();
+    const auto inserted = impl_->glyph_texts_.emplace(
+        text, wxString::FromUTF8(text));
+    return inserted.first->second;
+}
+
 void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
                                     const TerminalSnapshot& snapshot,
                                     const TerminalDirtyRegion& dirty)
@@ -248,14 +282,8 @@ void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
 
             dc.SetTextForeground(wxColour(cell.foreground[0], cell.foreground[1],
                                           cell.foreground[2]));
-            wxFont glyph_font = impl_->font_;
-            glyph_font.SetWeight((cell.attributes & 0x01) != 0
-                ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
-            glyph_font.SetStyle((cell.attributes & 0x02) != 0
-                ? wxFONTSTYLE_ITALIC : wxFONTSTYLE_NORMAL);
-            glyph_font.SetUnderlined((cell.attributes & 0x04) != 0);
-            dc.SetFont(glyph_font);
-            const wxString glyph = wxString::FromUTF8(cell.text);
+            dc.SetFont(GlyphFont(cell.attributes));
+            const wxString& glyph = GlyphText(cell.text);
             if (!glyph.empty() && cell.text != " ")
                 dc.DrawText(glyph, column * impl_->cell_width_, row * impl_->cell_height_);
             if ((cell.attributes & 0x04) != 0) {
@@ -312,6 +340,9 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
     }
 
     const TerminalFrame frame = impl_->core_.TakeFrame();
+    if (frame.snapshot == nullptr)
+        return;
+    const TerminalSnapshot& snapshot = *frame.snapshot;
     const wxSize client_size = GetClientSize();
     const int bitmap_width = std::max(1, client_size.GetWidth());
     const int bitmap_height = std::max(1, client_size.GetHeight());
@@ -330,12 +361,12 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
                                                        background[2])));
         framebuffer_dc.Clear();
         const TerminalDirtyRegion full_region {
-            0, 0, frame.snapshot.columns, frame.snapshot.rows
+            0, 0, snapshot.columns, snapshot.rows
         };
-        RenderSnapshot(framebuffer_dc, frame.snapshot, full_region);
+        RenderSnapshot(framebuffer_dc, snapshot, full_region);
         impl_->framebuffer_valid_ = true;
     } else if (frame.changed) {
-        RenderSnapshot(framebuffer_dc, frame.snapshot, frame.dirty);
+        RenderSnapshot(framebuffer_dc, snapshot, frame.dirty);
     }
     framebuffer_dc.SelectObject(wxNullBitmap);
 

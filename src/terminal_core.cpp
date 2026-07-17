@@ -76,6 +76,13 @@ private:
         TerminalDirtyRegion* dirty = nullptr;
         tsm_age_t previous_age = 0;
         bool full_repaint = false;
+        bool cursor_changed = false;
+        unsigned int previous_cursor_x = 0;
+        unsigned int previous_cursor_y = 0;
+        unsigned int cursor_x = 0;
+        unsigned int cursor_y = 0;
+        uint64_t* decoded_cells = nullptr;
+        uint64_t* reused_cells = nullptr;
     };
 
     static void IncludeDirty(TerminalDirtyRegion& dirty,
@@ -137,9 +144,21 @@ private:
         if (column >= snapshot->columns || row >= snapshot->rows)
             return 0;
 
-        if (context->full_repaint || age == 0 || age > context->previous_age)
-            IncludeDirty(*context->dirty, column, row, width,
-                         snapshot->columns, snapshot->rows);
+        const bool cursor_cell = context->cursor_changed &&
+            ((column == context->previous_cursor_x &&
+              row == context->previous_cursor_y) ||
+             (column == context->cursor_x && row == context->cursor_y));
+        const bool changed = context->full_repaint || age == 0 ||
+            age > context->previous_age || cursor_cell;
+        if (!changed) {
+            if (context->reused_cells != nullptr)
+                ++*context->reused_cells;
+            return 0;
+        }
+        if (context->decoded_cells != nullptr)
+            ++*context->decoded_cells;
+        IncludeDirty(*context->dirty, column, row, width,
+                     snapshot->columns, snapshot->rows);
 
         TerminalCell& cell = snapshot->cells[row * snapshot->columns + column];
         cell.text.clear();
@@ -270,60 +289,71 @@ private:
         if (screen_ == nullptr)
             return frame;
 
-        frame.snapshot.columns = tsm_screen_get_width(screen_);
-        frame.snapshot.rows = tsm_screen_get_height(screen_);
-        frame.snapshot.cursor_x = tsm_screen_get_cursor_x(screen_);
-        frame.snapshot.cursor_y = tsm_screen_get_cursor_y(screen_);
-        frame.snapshot.cursor_visible = vte_ != nullptr &&
+        if (!snapshot_cache_ || snapshot_cache_.use_count() > 1) {
+            snapshot_cache_ = snapshot_cache_
+                ? std::make_shared<TerminalSnapshot>(*snapshot_cache_)
+                : std::make_shared<TerminalSnapshot>();
+        }
+        TerminalSnapshot& snapshot = *snapshot_cache_;
+        snapshot.columns = tsm_screen_get_width(screen_);
+        snapshot.rows = tsm_screen_get_height(screen_);
+        snapshot.cursor_x = tsm_screen_get_cursor_x(screen_);
+        snapshot.cursor_y = tsm_screen_get_cursor_y(screen_);
+        snapshot.cursor_visible = vte_ != nullptr &&
             (tsm_vte_get_flags(vte_) & TSM_VTE_FLAG_TEXT_CURSOR_MODE) != 0;
-        frame.snapshot.cursor_style = cursor_style_;
-        frame.snapshot.alternate_screen = (tsm_screen_get_flags(screen_) &
-                                           TSM_SCREEN_ALTERNATE) != 0;
+        snapshot.cursor_style = cursor_style_;
+        snapshot.alternate_screen = (tsm_screen_get_flags(screen_) &
+                                     TSM_SCREEN_ALTERNATE) != 0;
 
         const bool metadata_changed = frame_valid_ &&
-            (frame.snapshot.columns != last_columns_ ||
-             frame.snapshot.rows != last_rows_ ||
-             frame.snapshot.alternate_screen != last_alternate_screen_);
+            (snapshot.columns != last_columns_ || snapshot.rows != last_rows_ ||
+             snapshot.alternate_screen != last_alternate_screen_);
         frame.full_repaint = !frame_valid_ || metadata_changed;
 
-        frame.snapshot.cells.resize(frame.snapshot.columns * frame.snapshot.rows);
+        snapshot.cells.resize(snapshot.columns * snapshot.rows);
         FrameDrawContext context;
-        context.snapshot = &frame.snapshot;
+        context.snapshot = &snapshot;
         context.dirty = &frame.dirty;
         context.previous_age = last_draw_age_;
         context.full_repaint = frame.full_repaint;
+        context.cursor_changed = frame_valid_ &&
+            (snapshot.cursor_x != last_cursor_x_ ||
+             snapshot.cursor_y != last_cursor_y_ ||
+             snapshot.cursor_visible != last_cursor_visible_ ||
+             snapshot.cursor_style != last_cursor_style_);
+        context.previous_cursor_x = last_cursor_x_;
+        context.previous_cursor_y = last_cursor_y_;
+        context.cursor_x = snapshot.cursor_x;
+        context.cursor_y = snapshot.cursor_y;
+        context.decoded_cells = &metrics_.frame_cells_decoded;
+        context.reused_cells = &metrics_.frame_cells_reused;
         const tsm_age_t age = tsm_screen_draw(screen_, &Impl::DrawCell,
                                              &context);
 
-        if (frame_valid_ &&
-            (frame.snapshot.cursor_x != last_cursor_x_ ||
-             frame.snapshot.cursor_y != last_cursor_y_ ||
-             frame.snapshot.cursor_visible != last_cursor_visible_ ||
-             frame.snapshot.cursor_style != last_cursor_style_)) {
+        if (context.cursor_changed) {
             IncludeCell(frame.dirty, last_cursor_x_, last_cursor_y_,
-                        frame.snapshot.columns, frame.snapshot.rows);
-            IncludeCell(frame.dirty, frame.snapshot.cursor_x,
-                        frame.snapshot.cursor_y, frame.snapshot.columns,
-                        frame.snapshot.rows);
+                        snapshot.columns, snapshot.rows);
+            IncludeCell(frame.dirty, snapshot.cursor_x, snapshot.cursor_y,
+                        snapshot.columns, snapshot.rows);
         }
 
         if (age == 0) {
             frame.full_repaint = true;
             frame.dirty.left = 0;
             frame.dirty.top = 0;
-            frame.dirty.right = frame.snapshot.columns;
-            frame.dirty.bottom = frame.snapshot.rows;
+            frame.dirty.right = snapshot.columns;
+            frame.dirty.bottom = snapshot.rows;
         }
         if (frame.full_repaint && frame.dirty.IsEmpty()) {
             frame.dirty.left = 0;
             frame.dirty.top = 0;
-            frame.dirty.right = frame.snapshot.columns;
-            frame.dirty.bottom = frame.snapshot.rows;
+            frame.dirty.right = snapshot.columns;
+            frame.dirty.bottom = snapshot.rows;
         }
         if (!frame.dirty.IsEmpty() && frame.dirty.left == 0 &&
             frame.dirty.top == 0 &&
-            frame.dirty.right == frame.snapshot.columns &&
-            frame.dirty.bottom == frame.snapshot.rows)
+            frame.dirty.right == snapshot.columns &&
+            frame.dirty.bottom == snapshot.rows)
             frame.full_repaint = true;
 
         frame.changed = frame.full_repaint || !frame.dirty.IsEmpty();
@@ -337,13 +367,14 @@ private:
         // with a fresh age baseline.
         frame_valid_ = age != 0;
         last_draw_age_ = age;
-        last_columns_ = frame.snapshot.columns;
-        last_rows_ = frame.snapshot.rows;
-        last_alternate_screen_ = frame.snapshot.alternate_screen;
-        last_cursor_x_ = frame.snapshot.cursor_x;
-        last_cursor_y_ = frame.snapshot.cursor_y;
-        last_cursor_visible_ = frame.snapshot.cursor_visible;
-        last_cursor_style_ = frame.snapshot.cursor_style;
+        last_columns_ = snapshot.columns;
+        last_rows_ = snapshot.rows;
+        last_alternate_screen_ = snapshot.alternate_screen;
+        last_cursor_x_ = snapshot.cursor_x;
+        last_cursor_y_ = snapshot.cursor_y;
+        last_cursor_visible_ = snapshot.cursor_visible;
+        last_cursor_style_ = snapshot.cursor_style;
+        frame.snapshot = snapshot_cache_;
         return frame;
     }
 
@@ -376,6 +407,7 @@ private:
     bool last_cursor_visible_ = false;
     bool last_alternate_screen_ = false;
     TerminalCursorStyle last_cursor_style_ = TerminalCursorStyle::Block;
+    std::shared_ptr<TerminalSnapshot> snapshot_cache_;
 
     friend class TerminalCore;
 };
@@ -626,7 +658,7 @@ TerminalFrame TerminalCore::TakeFrame()
 TerminalSnapshot TerminalCore::TakeSnapshot()
 {
     TerminalFrame frame = TakeFrame();
-    return std::move(frame.snapshot);
+    return frame.snapshot == nullptr ? TerminalSnapshot {} : *frame.snapshot;
 }
 
 TerminalMetrics TerminalCore::GetMetrics() const

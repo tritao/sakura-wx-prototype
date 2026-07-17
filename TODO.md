@@ -26,10 +26,12 @@ cross-platform terminal library and a Sakura frontend foundation.
 
 - [x] Add dirty-cell tracking.
   - Expose libtsm ageing as generation-based dirty-frame metadata.
+  - Reuse unchanged terminal cells through a copy-on-write snapshot cache.
   - Use a wx backing bitmap so unchanged cells are not redrawn.
   - Preserve correct invalidation for scrolling, selection, cursor, and resize.
 
 - [ ] Add glyph caching.
+  - [x] Cache UTF-8 conversion and font variants in the wx renderer.
   - Cache measured and rendered glyph runs by font, attributes, and text.
   - Include wide glyphs, combining marks, and fallback fonts in cache tests.
 

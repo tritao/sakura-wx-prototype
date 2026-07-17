@@ -68,30 +68,60 @@ int main()
 
         TerminalCore frame_core(nullptr);
         Check(frame_core.Resize(10, 2), "dirty frame resize failed");
-        const TerminalFrame first_frame = frame_core.TakeFrame();
-        Check(first_frame.generation == 1 && first_frame.changed &&
-                  first_frame.full_repaint &&
-                  first_frame.dirty.left == 0 && first_frame.dirty.top == 0 &&
-                  first_frame.dirty.right == 10 && first_frame.dirty.bottom == 2,
-              "first frame did not request a full repaint");
-        const TerminalFrame clean_frame = frame_core.TakeFrame();
-        Check(clean_frame.generation == first_frame.generation &&
-                  !clean_frame.changed && clean_frame.dirty.IsEmpty(),
-              "unchanged frame was not reported as clean");
+        uint64_t first_generation = 0;
+        {
+            const TerminalFrame first_frame = frame_core.TakeFrame();
+            first_generation = first_frame.generation;
+            Check(first_frame.generation == 1 && first_frame.changed &&
+                      first_frame.full_repaint &&
+                      first_frame.dirty.left == 0 && first_frame.dirty.top == 0 &&
+                      first_frame.dirty.right == 10 && first_frame.dirty.bottom == 2,
+                  "first frame did not request a full repaint");
+        }
+        Check(frame_core.GetMetrics().frame_cells_decoded == 20,
+              "first frame did not decode every cell");
+        {
+            const TerminalFrame clean_frame = frame_core.TakeFrame();
+            Check(clean_frame.generation == first_generation &&
+                      !clean_frame.changed && clean_frame.dirty.IsEmpty(),
+                  "unchanged frame was not reported as clean");
+        }
+        Check(frame_core.GetMetrics().frame_cells_reused >= 20,
+              "unchanged frame did not reuse cached cells");
         frame_core.FeedOutput("abc", 3);
-        const TerminalFrame changed_frame = frame_core.TakeFrame();
-        Check(changed_frame.generation > clean_frame.generation &&
-                  changed_frame.changed && !changed_frame.dirty.IsEmpty() &&
-                  changed_frame.dirty.left == 0 &&
-                  changed_frame.dirty.top == 0 &&
-                  changed_frame.dirty.right >= 3,
-              "output did not produce a dirty frame");
+        uint64_t changed_generation = 0;
+        {
+            const TerminalFrame changed_frame = frame_core.TakeFrame();
+            changed_generation = changed_frame.generation;
+            Check(changed_frame.generation > first_generation &&
+                      changed_frame.changed && !changed_frame.dirty.IsEmpty() &&
+                      changed_frame.dirty.left == 0 &&
+                      changed_frame.dirty.top == 0 &&
+                      changed_frame.dirty.right >= 3,
+                  "output did not produce a dirty frame");
+        }
+        Check(frame_core.GetMetrics().frame_cells_reused > 20,
+              "dirty frame did not retain unchanged cells");
         const char* frame_title = "\x1b]2;frame title\x07";
         frame_core.FeedOutput(frame_title, std::strlen(frame_title));
         const TerminalFrame title_frame = frame_core.TakeFrame();
-        Check(title_frame.generation == changed_frame.generation &&
+        Check(title_frame.generation == changed_generation &&
                   !title_frame.changed && title_frame.dirty.IsEmpty(),
               "title-only output dirtied the screen frame");
+
+        TerminalCore retained_frame_core(nullptr);
+        Check(retained_frame_core.Resize(8, 2),
+              "retained frame resize failed");
+        const TerminalFrame retained_frame = retained_frame_core.TakeFrame();
+        retained_frame_core.FeedOutput("a", 1);
+        const TerminalFrame updated_retained_frame =
+            retained_frame_core.TakeFrame();
+        Check(retained_frame.snapshot != nullptr &&
+                  updated_retained_frame.snapshot != nullptr &&
+                  retained_frame.snapshot != updated_retained_frame.snapshot &&
+                  CellAt(*retained_frame.snapshot, 0, 0).codepoint == ' ' &&
+                  CellAt(*updated_retained_frame.snapshot, 0, 0).codepoint == 'a',
+              "retained frame snapshot was mutated in place");
 
         const std::string styled_text = "\r\n\x1b[4munder\x1b[0m";
         core.FeedOutput(styled_text.data(), styled_text.size());

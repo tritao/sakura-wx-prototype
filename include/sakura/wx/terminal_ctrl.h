@@ -24,6 +24,8 @@ public:
 private:
     void UpdateGeometry();
     static uint32_t KeySymFor(const wxKeyEvent& event);
+    const wxFont& GlyphFont(uint8_t attributes);
+    const wxString& GlyphText(const std::string& text);
     void RenderSnapshot(wxDC& dc, const TerminalSnapshot& snapshot,
                         const TerminalDirtyRegion& dirty);
     void OnPaint(wxPaintEvent& event);

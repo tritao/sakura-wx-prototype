@@ -82,7 +82,9 @@ struct TerminalFrame {
     bool changed = false;
     bool full_repaint = false;
     TerminalDirtyRegion dirty;
-    TerminalSnapshot snapshot;
+    // The snapshot is immutable to consumers. TerminalCore uses copy-on-write
+    // only when an older frame is still retained by a caller.
+    std::shared_ptr<const TerminalSnapshot> snapshot;
 };
 
 struct TerminalMetrics {
@@ -92,6 +94,8 @@ struct TerminalMetrics {
     uint64_t transport_write_bytes = 0;
     uint64_t transport_write_events = 0;
     uint64_t rendered_frames = 0;
+    uint64_t frame_cells_decoded = 0;
+    uint64_t frame_cells_reused = 0;
     uint64_t render_latency_samples = 0;
     uint64_t max_render_latency_us = 0;
     uint64_t selection_copies = 0;
@@ -144,11 +148,11 @@ public:
     bool HasSelection() const;
     std::string CopySelection();
 
-    // Returns a complete snapshot plus the region that changed since the
-    // previous frame. The snapshot remains complete so consumers can retain
-    // it as a backing store while only repainting dirty cells. The first
-    // frame, a resize, an alternate-screen switch, and age-counter rollover
-    // request a full repaint.
+    // Returns a complete immutable snapshot plus the region that changed
+    // since the previous frame. The snapshot is shared and uses copy-on-write
+    // when a caller retains an older frame. The first frame, a resize, an
+    // alternate-screen switch, and age-counter rollover request a full
+    // repaint.
     TerminalFrame TakeFrame();
     TerminalSnapshot TakeSnapshot();
     TerminalMetrics GetMetrics() const;
