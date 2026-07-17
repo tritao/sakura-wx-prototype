@@ -38,11 +38,12 @@ that the native ConPTY runtime path is finished.
 
 ## MSVC libtsm hardening
 
-- [ ] Replace the current empty MSVC `SHL_EXPORT` fallback with a proper
+- [x] Replace the current empty MSVC `SHL_EXPORT` fallback with a proper
   static/shared-library import/export contract.
-- [ ] Audit uses of `_shl_free_`, `_shl_close_`, and other GNU cleanup
-  attributes; add explicit cleanup paths where MSVC cannot provide them.
-- [ ] Replace temporary heap allocations introduced for VLA removal with
+- [x] Audit uses of `_shl_free_`, `_shl_close_`, and other GNU cleanup
+  attributes; add explicit cleanup paths where MSVC cannot provide them in
+  the audited terminal and PTY paths.
+- [x] Replace temporary heap allocations introduced for VLA removal with
   bounded scratch storage or reusable workspace where appropriate.
 - [ ] Add MSVC and clang-cl builds for both static and shared library modes.
 - [ ] Run the same VT replay and semantic tests under GCC, Clang, MSVC, and

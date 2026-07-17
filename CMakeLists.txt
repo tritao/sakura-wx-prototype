@@ -57,6 +57,7 @@ target_compile_definitions(sakura_libtsm PRIVATE
     _GNU_SOURCE
     _POSIX_C_SOURCE=200809L
 )
+target_compile_definitions(sakura_libtsm PUBLIC TSM_STATIC)
 target_compile_features(sakura_libtsm PRIVATE c_std_99)
 
 add_library(sakura_terminal_core STATIC
