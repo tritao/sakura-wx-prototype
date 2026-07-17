@@ -50,6 +50,16 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Debug --output-on-failure
 
+      - name: Report native transport diagnostics
+        if: runner.os == 'Windows' && failure()
+        shell: pwsh
+        run: |
+          $log = "build/Testing/Temporary/LastTest.log"
+          if (Test-Path $log) {
+            "### Native transport diagnostics" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            Get-Content $log | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          }
+
       - name: Verify native transport coverage
         if: runner.os == 'macOS' || runner.os == 'Windows'
         run: >-
