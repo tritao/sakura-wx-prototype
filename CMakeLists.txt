@@ -117,6 +117,7 @@ if(WIN32)
         _WIN32_WINNT=0x0A00
         WINVER=0x0A00
     )
+    target_link_libraries(sakura_transport PUBLIC kernel32)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
