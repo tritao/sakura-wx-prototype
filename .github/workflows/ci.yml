@@ -57,7 +57,11 @@ jobs:
           $log = "build/Testing/Temporary/LastTest.log"
           if (Test-Path $log) {
             "### Native transport diagnostics" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
-            Get-Content $log | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            $lines = Get-Content $log
+            $lines | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            foreach ($line in $lines | Where-Object { $_ -match "captured (bytes|output)" }) {
+              Write-Output "::error title=Native transport diagnostic::$line"
+            }
           }
 
       - name: Upload native transport diagnostics
