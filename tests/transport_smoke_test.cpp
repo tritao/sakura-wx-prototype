@@ -22,6 +22,7 @@ int main()
         auto transport = CreateTerminalTransport();
         Check(transport != nullptr, "transport factory returned null");
         Check(transport->Start(80, 24, ""), "transport failed to start");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
 #if defined(_WIN32)
         const std::string command = "echo transport-smoke\rexit\r";
