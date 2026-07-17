@@ -51,4 +51,5 @@ private:
     std::thread reader_thread_;
     int master_fd_ = -1;
     int child_pid_ = -1;
+    bool child_reaped_ = false;
 };

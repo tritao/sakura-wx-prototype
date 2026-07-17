@@ -52,4 +52,5 @@ private:
     void* output_read_ = nullptr;
     void* pseudo_console_ = nullptr;
     void* process_handle_ = nullptr;
+    void* process_job_ = nullptr;
 };

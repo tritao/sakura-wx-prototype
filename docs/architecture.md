@@ -38,6 +38,19 @@ child process -> reader thread -> synchronized output queue -> UI TakeOutput()
 while the reader thread is active. A returned output vector owns its strings;
 the caller may retain them after `TakeOutput()` returns.
 
+`Stop()` joins the reader and preserves all output already read from the
+session, so the owner can drain final output after exit. A subsequent
+`Start()` deliberately discards any undrained output from the previous
+session before creating a new process; this prevents stale bytes from being
+applied to the new terminal session. `Start()` and `Stop()` are idempotent at
+the owner-thread boundary.
+
+The POSIX transport treats PTY `EIO`/EOF as the end of the reader stream,
+waits for the child to report its exit status, and uses the PTY process group
+for shutdown escalation. On Windows, the ConPTY reader's blocking operation
+is cancelled before the reader is joined, and the process is placed in a
+kill-on-close Job Object when the platform permits it.
+
 `WxTerminalCtrl` owns the `std::unique_ptr<TerminalTransport>` passed to its
 constructor. It stops the transport before releasing it. Applications must not
 use that transport pointer after handing ownership to the control.

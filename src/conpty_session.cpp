@@ -73,6 +73,11 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
                            const std::string& shell)
 {
     Stop();
+    {
+        std::lock_guard lock(output_mutex_);
+        output_.clear();
+    }
+    queued_bytes_.store(0);
     state_.store(TransportState::Starting);
     exit_code_.store(-1);
     exit_signal_.store(0);
@@ -99,8 +104,8 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
 
     HPCON pseudo_console = nullptr;
     const COORD size {
-        static_cast<SHORT>(std::min(columns, 32767u)),
-        static_cast<SHORT>(std::min(rows, 32767u)),
+        static_cast<SHORT>(std::clamp(columns, 1u, 32767u)),
+        static_cast<SHORT>(std::clamp(rows, 1u, 32767u)),
     };
     const HRESULT console_result = CreatePseudoConsole(
         size, input_read, output_write, 0, &pseudo_console);
@@ -160,7 +165,8 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
         &startup_info.StartupInfo, &process_info);
     DeleteProcThreadAttributeList(attributes);
-    CloseHandle(process_info.hThread);
+    if (process_info.hThread != nullptr)
+        CloseHandle(process_info.hThread);
     if (!created) {
         ClosePseudoConsole(pseudo_console);
         CloseHandle(input_write);
@@ -169,12 +175,26 @@ bool ConPtySession::Start(unsigned int columns, unsigned int rows,
         return false;
     }
 
+    HANDLE process_job = CreateJobObjectW(nullptr, nullptr);
+    if (process_job != nullptr) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_info {};
+        job_info.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(process_job, JobObjectExtendedLimitInformation,
+                                     &job_info, sizeof(job_info)) ||
+            !AssignProcessToJobObject(process_job, process_info.hProcess)) {
+            CloseHandle(process_job);
+            process_job = nullptr;
+        }
+    }
+
     {
         std::lock_guard lock(io_mutex_);
         input_write_ = input_write;
         output_read_ = output_read;
         pseudo_console_ = pseudo_console;
         process_handle_ = process_info.hProcess;
+        process_job_ = process_job;
     }
     stop_requested_.store(false);
     running_.store(true);
@@ -199,33 +219,43 @@ void ConPtySession::Stop()
     HANDLE output = nullptr;
     HANDLE input = nullptr;
     HPCON pseudo_console = nullptr;
+    HANDLE process_job = nullptr;
     {
         std::lock_guard lock(io_mutex_);
         process = static_cast<HANDLE>(process_handle_);
         output = static_cast<HANDLE>(output_read_);
         input = static_cast<HANDLE>(input_write_);
         pseudo_console = static_cast<HPCON>(pseudo_console_);
+        process_job = static_cast<HANDLE>(process_job_);
         process_handle_ = nullptr;
         output_read_ = nullptr;
         input_write_ = nullptr;
         pseudo_console_ = nullptr;
+        process_job_ = nullptr;
     }
 
+    if (process_job != nullptr)
+        TerminateJobObject(process_job, 0);
     if (process != nullptr)
         TerminateProcess(process, 0);
     if (output != nullptr)
-        CloseHandle(output);
+        CancelIoEx(output, nullptr);
     if (reader_thread_.joinable())
         reader_thread_.join();
+    if (output != nullptr)
+        CloseHandle(output);
     if (input != nullptr)
         CloseHandle(input);
     if (pseudo_console != nullptr)
         ClosePseudoConsole(pseudo_console);
     if (process != nullptr) {
         WaitForSingleObject(process, 2000);
-        RecordExitCode(exit_code_, exit_code_valid_, process);
+        if (!exit_code_valid_.load())
+            RecordExitCode(exit_code_, exit_code_valid_, process);
         CloseHandle(process);
     }
+    if (process_job != nullptr)
+        CloseHandle(process_job);
 #else
     if (reader_thread_.joinable())
         reader_thread_.join();
@@ -272,8 +302,8 @@ bool ConPtySession::Resize(unsigned int columns, unsigned int rows)
     if (console == nullptr)
         return false;
     const COORD size {
-        static_cast<SHORT>(std::min(columns, 32767u)),
-        static_cast<SHORT>(std::min(rows, 32767u)),
+        static_cast<SHORT>(std::clamp(columns, 1u, 32767u)),
+        static_cast<SHORT>(std::clamp(rows, 1u, 32767u)),
     };
     const bool resized = SUCCEEDED(ResizePseudoConsole(console, size));
     if (resized)

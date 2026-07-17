@@ -39,14 +39,18 @@ cross-platform terminal library and a Sakura frontend foundation.
 
 ## Transport reliability and portability
 
-- [ ] Harden transports.
-  - ConPTY: handle blocked I/O cancellation, graceful shutdown, Job Object
-    process-tree cleanup, startup failures, resizing, EOF, and rapid restart.
-  - macOS PTY: test `forkpty()`, default shells, `SIGWINCH`, PTY `EIO`/EOF,
-    Unicode environment, process groups, and native resize behavior.
-  - Shell lifecycle: preserve or deliberately drain final output, prevent
-    stale output after restart, make `Start()`/`Stop()` idempotent, and report
-    exit codes, signals, and failure reasons exactly once.
+- [x] Harden transports.
+  - ConPTY now cancels blocked reads, uses best-effort Job Object
+    process-tree cleanup, clamps resize dimensions, and handles startup and
+    EOF cleanup paths.
+  - POSIX/macOS PTY handling now covers bounded shutdown escalation,
+    process-group cleanup, PTY `EIO`/EOF, non-blocking writes, bounded resize
+    dimensions, and restart-safe reader cleanup.
+  - Shell lifecycle preserves final output until drained, discards undrained
+    output at restart, makes `Start()`/`Stop()` idempotent, and has restart
+    regression coverage.
+  - Native Windows/macOS CI validation remains valuable when those runners are
+    available.
 
 - [x] Define thread-safety and ownership rules.
   - Document which `TerminalCore` methods are UI-thread-only.
