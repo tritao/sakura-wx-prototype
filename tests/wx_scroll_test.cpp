@@ -226,16 +226,8 @@ int RunScrollTest()
     return 0;
 }
 
-int RunAnimationTest()
+int PrepareAnimationWindow(wxFrame& frame, WxTerminalCtrl& terminal)
 {
-    wxFrame frame(nullptr, wxID_ANY, "Sakura scroll animation test",
-                 wxDefaultPosition, wxSize(640, 480));
-    TerminalConfig config;
-    config.start_transport = false;
-    config.timer_interval_ms = 60000;
-    config.scroll_animation_ms_per_line = 50;
-    config.scroll_animation_max_ms = 100;
-    WxTerminalCtrl terminal(&frame, nullptr, config);
     frame.Show();
     wxYield();
 
@@ -246,7 +238,11 @@ int RunAnimationTest()
     terminal.SetSize(wxSize(640, target_height));
     wxYield();
     terminal.Update();
+    return cell_height;
+}
 
+void FeedAnimationOutput(WxTerminalCtrl& terminal)
+{
     std::string output;
     for (unsigned int line = 0; line < 64; ++line)
         output += "animation-line-" + std::to_string(line) + "\r\n";
@@ -254,6 +250,29 @@ int RunAnimationTest()
     terminal.RefreshFrame();
     wxYield();
     terminal.Update();
+}
+
+int RunAnimationTest(int wheel_rotation)
+{
+    wxFrame frame(nullptr, wxID_ANY, "Sakura scroll animation test",
+                 wxDefaultPosition, wxSize(640, 480));
+    TerminalConfig config;
+    config.start_transport = false;
+    config.timer_interval_ms = 60000;
+    config.scroll_animation_ms_per_line = 50;
+    config.scroll_animation_max_ms = 100;
+    WxTerminalCtrl terminal(&frame, nullptr, config);
+    const int cell_height = PrepareAnimationWindow(frame, terminal);
+    constexpr int expected_lines = 2;
+    FeedAnimationOutput(terminal);
+    if (wheel_rotation < 0) {
+        // Start the reverse-direction case away from the scrollback limit so
+        // the negative wheel action has visible viewport movement to animate.
+        sakura_terminal_scroll_lines(terminal.Core(), expected_lines * 4);
+        terminal.RefreshFrame();
+        wxYield();
+        terminal.Update();
+    }
     const WxPaintMetrics initial = terminal.GetPaintMetrics();
     const wxBitmap before = CaptureClient(terminal);
     const wxSize client_size = terminal.GetClientSize();
@@ -265,8 +284,7 @@ int RunAnimationTest()
         return 12;
     }
 
-    constexpr int expected_lines = 2;
-    SendWheel(terminal, 120, 120, expected_lines);
+    SendWheel(terminal, wheel_rotation, 120, expected_lines);
     TickAndPaint(terminal);
     const WxPaintMetrics started = terminal.GetPaintMetrics();
     std::vector<wxBitmap> animation_frames;
@@ -343,13 +361,130 @@ int RunAnimationTest()
     return 0;
 }
 
+int RunResizeDuringAnimationTest()
+{
+    wxFrame frame(nullptr, wxID_ANY, "Sakura scroll resize test",
+                 wxDefaultPosition, wxSize(640, 480));
+    TerminalConfig config;
+    config.start_transport = false;
+    config.timer_interval_ms = 60000;
+    config.scroll_animation_ms_per_line = 100;
+    config.scroll_animation_max_ms = 200;
+    WxTerminalCtrl terminal(&frame, nullptr, config);
+    const int cell_height = PrepareAnimationWindow(frame, terminal);
+    FeedAnimationOutput(terminal);
+
+    const WxPaintMetrics initial = terminal.GetPaintMetrics();
+    SendWheel(terminal, 120, 120, 2);
+    TickAndPaint(terminal);
+    const WxPaintMetrics started = terminal.GetPaintMetrics();
+    if (started.scroll_animation_starts !=
+            initial.scroll_animation_starts + 1) {
+        std::cerr << "resize test did not start a scroll animation\n";
+        return 15;
+    }
+
+    const int resized_height = cell_height * 25 +
+        std::max(1, cell_height / 2);
+    frame.SetClientSize(wxSize(640, resized_height));
+    terminal.SetSize(wxSize(640, resized_height));
+    wxYield();
+    terminal.Update();
+    const WxPaintMetrics resized = terminal.GetPaintMetrics();
+    if (resized.scroll_animation_settles !=
+            started.scroll_animation_settles + 1 ||
+        resized.scroll_animation_completions !=
+            started.scroll_animation_completions) {
+        std::cerr << "resize did not settle the active scroll animation\n";
+        return 16;
+    }
+
+    const wxSize client_size = terminal.GetClientSize();
+    const int grid_height = (client_size.GetHeight() / cell_height) *
+        cell_height;
+    if (grid_height >= client_size.GetHeight() ||
+        !HasConfiguredRemainder(CaptureClient(terminal), grid_height)) {
+        std::cerr << "resize exposed an incorrectly painted terminal remainder\n";
+        return 17;
+    }
+    return 0;
+}
+
+int RunAlternateScreenTest()
+{
+    wxFrame frame(nullptr, wxID_ANY, "Sakura alternate screen test",
+                 wxDefaultPosition, wxSize(640, 480));
+    TerminalConfig config;
+    config.start_transport = false;
+    config.timer_interval_ms = 60000;
+    config.scroll_animation_ms_per_line = 80;
+    config.scroll_animation_max_ms = 160;
+    WxTerminalCtrl terminal(&frame, nullptr, config);
+    PrepareAnimationWindow(frame, terminal);
+    FeedAnimationOutput(terminal);
+
+    const WxPaintMetrics initial = terminal.GetPaintMetrics();
+    SendWheel(terminal, 120, 120, 2);
+    TickAndPaint(terminal);
+    const WxPaintMetrics started = terminal.GetPaintMetrics();
+    if (started.scroll_animation_starts !=
+            initial.scroll_animation_starts + 1) {
+        std::cerr << "alternate-screen test did not start a scroll animation\n";
+        return 18;
+    }
+
+    const char enter_alternate[] = "\x1b[?1049h\x1b[2J\x1b[Halternate\r\n";
+    sakura_terminal_feed_output(terminal.Core(), enter_alternate,
+                                sizeof(enter_alternate) - 1);
+    terminal.RefreshFrame();
+    wxYield();
+    terminal.Update();
+    const WxPaintMetrics alternate = terminal.GetPaintMetrics();
+    if (alternate.scroll_animation_settles !=
+            started.scroll_animation_settles + 1) {
+        std::cerr << "alternate-screen transition did not cancel scrolling\n";
+        return 19;
+    }
+
+    SendWheel(terminal, 120, 120, 2);
+    TickAndPaint(terminal);
+    const WxPaintMetrics alternate_wheel = terminal.GetPaintMetrics();
+    if (alternate_wheel.scroll_animation_starts !=
+            alternate.scroll_animation_starts) {
+        std::cerr << "alternate screen unexpectedly animated scrollback\n";
+        return 20;
+    }
+
+    const char leave_alternate[] = "\x1b[?1049l";
+    sakura_terminal_feed_output(terminal.Core(), leave_alternate,
+                                sizeof(leave_alternate) - 1);
+    terminal.RefreshFrame();
+    wxYield();
+    terminal.Update();
+    SendWheel(terminal, 120, 120, 2);
+    TickAndPaint(terminal);
+    const WxPaintMetrics restored = terminal.GetPaintMetrics();
+    if (restored.scroll_animation_starts !=
+            alternate_wheel.scroll_animation_starts + 1) {
+        std::cerr << "scroll animation did not resume after alternate screen\n";
+        return 21;
+    }
+    return 0;
+}
+
 class ScrollTestApp final : public wxApp {
 public:
     bool OnInit() override
     {
         result_ = RunScrollTest();
         if (result_ == 0)
-            result_ = RunAnimationTest();
+            result_ = RunAnimationTest(120);
+        if (result_ == 0)
+            result_ = RunAnimationTest(-120);
+        if (result_ == 0)
+            result_ = RunResizeDuringAnimationTest();
+        if (result_ == 0)
+            result_ = RunAlternateScreenTest();
         CallAfter([this]() { ExitMainLoop(); });
         return true;
     }
