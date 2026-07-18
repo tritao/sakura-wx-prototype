@@ -18,11 +18,16 @@ struct MetricDelta {
     std::uint64_t framebuffer_rebuilds = 0;
     std::uint64_t painted_cells = 0;
     std::uint64_t paint_time_us = 0;
+    std::uint64_t max_paint_time_us = 0;
     std::uint64_t refresh_requests = 0;
     std::uint64_t full_refresh_requests = 0;
     std::uint64_t dirty_refresh_requests = 0;
     std::uint64_t glyph_run_cache_hits = 0;
     std::uint64_t glyph_run_cache_misses = 0;
+    std::uint64_t background_rectangles = 0;
+    std::uint64_t glyph_bitmap_draws = 0;
+    std::uint64_t glyph_text_draws = 0;
+    std::uint64_t dc_state_changes = 0;
 };
 
 MetricDelta Difference(const WxPaintMetrics& before,
@@ -35,18 +40,24 @@ MetricDelta Difference(const WxPaintMetrics& before,
         after.framebuffer_rebuilds - before.framebuffer_rebuilds,
         after.painted_cells - before.painted_cells,
         after.paint_time_us - before.paint_time_us,
+        after.max_paint_time_us,
         after.refresh_requests - before.refresh_requests,
         after.full_refresh_requests - before.full_refresh_requests,
         after.dirty_refresh_requests - before.dirty_refresh_requests,
         after.glyph_run_cache_hits - before.glyph_run_cache_hits,
         after.glyph_run_cache_misses - before.glyph_run_cache_misses,
+        after.background_rectangles - before.background_rectangles,
+        after.glyph_bitmap_draws - before.glyph_bitmap_draws,
+        after.glyph_text_draws - before.glyph_text_draws,
+        after.dc_state_changes - before.dc_state_changes,
     };
 }
 
-std::string MakeScreen(const std::string& prefix, bool unicode)
+std::string MakeScreen(const std::string& prefix, bool unicode,
+                       unsigned int rows = 32)
 {
     std::string result;
-    for (unsigned int row = 0; row < 32; ++row) {
+    for (unsigned int row = 0; row < rows; ++row) {
         result += prefix;
         result += " row=";
         result += std::to_string(row);
@@ -61,6 +72,11 @@ enum class ScenarioKind {
     FullAscii,
     PartialAscii,
     PartialUnicode,
+    PartialUnicodeUncached,
+    BurstOutput,
+    LargeScreen,
+    Resize,
+    Scroll,
     Cursor,
     Selection,
 };
@@ -71,6 +87,12 @@ const char* ScenarioName(ScenarioKind kind)
     case ScenarioKind::FullAscii: return "full-ascii";
     case ScenarioKind::PartialAscii: return "partial-ascii";
     case ScenarioKind::PartialUnicode: return "partial-unicode";
+    case ScenarioKind::PartialUnicodeUncached:
+        return "partial-unicode-uncached";
+    case ScenarioKind::BurstOutput: return "burst-output";
+    case ScenarioKind::LargeScreen: return "large-screen";
+    case ScenarioKind::Resize: return "resize";
+    case ScenarioKind::Scroll: return "scroll";
     case ScenarioKind::Cursor: return "cursor";
     case ScenarioKind::Selection: return "selection";
     }
@@ -88,12 +110,20 @@ public:
     {
         std::cout << "scenario\titerations\telapsed_ms\tpaint_events\t"
                      "full_repaints\tpartial_repaints\tpainted_cells\t"
-                     "paint_time_us\tfull_refreshes\tdirty_refreshes\t"
-                     "glyph_cache_hits\tglyph_cache_misses\n";
+                     "paint_time_us\tmax_paint_us\tfull_refreshes\t"
+                     "dirty_refreshes\t"
+                     "glyph_cache_hits\tglyph_cache_misses\t"
+                     "background_rectangles\tglyph_bitmap_draws\t"
+                     "glyph_text_draws\tdc_state_changes\n";
         const ScenarioKind scenarios[] = {
             ScenarioKind::FullAscii,
             ScenarioKind::PartialAscii,
             ScenarioKind::PartialUnicode,
+            ScenarioKind::PartialUnicodeUncached,
+            ScenarioKind::BurstOutput,
+            ScenarioKind::LargeScreen,
+            ScenarioKind::Resize,
+            ScenarioKind::Scroll,
             ScenarioKind::Cursor,
             ScenarioKind::Selection,
         };
@@ -118,16 +148,27 @@ private:
         TerminalConfig config;
         config.start_transport = false;
         config.timer_interval_ms = 1000000;
+        config.glyph_cache_enabled = kind !=
+            ScenarioKind::PartialUnicodeUncached;
         auto* terminal = new WxTerminalCtrl(frame, nullptr, config, {});
         auto* sizer = new wxBoxSizer(wxVERTICAL);
         sizer->Add(terminal, 1, wxEXPAND);
         frame->SetSizer(sizer);
         frame->Show();
+        if (kind == ScenarioKind::LargeScreen) {
+            frame->SetClientSize(wxSize(1600, 900));
+            frame->Layout();
+        }
         wxYield();
 
         SakuraTerminal* core = terminal->Core();
-        const bool unicode = kind == ScenarioKind::PartialUnicode;
-        const std::string initial = MakeScreen("benchmark", unicode);
+        const bool unicode = kind == ScenarioKind::PartialUnicode ||
+            kind == ScenarioKind::PartialUnicodeUncached;
+        const unsigned int initial_rows = kind == ScenarioKind::LargeScreen
+            ? 64 : 32;
+        const std::string initial = MakeScreen(
+            kind == ScenarioKind::Scroll ? "scroll" : "benchmark",
+            unicode, initial_rows);
         sakura_terminal_feed_output(core, "\033[2J\033[H", 7);
         sakura_terminal_feed_output(core, initial.data(), initial.size());
         PumpPaint(*terminal);
@@ -149,6 +190,37 @@ private:
             }
             case ScenarioKind::PartialUnicode: {
                 const std::string update = "\033[2;1H界é";
+                sakura_terminal_feed_output(core, update.data(), update.size());
+                break;
+            }
+            case ScenarioKind::PartialUnicodeUncached: {
+                const std::string update = "\033[2;1H界é";
+                sakura_terminal_feed_output(core, update.data(), update.size());
+                break;
+            }
+            case ScenarioKind::BurstOutput:
+                for (unsigned int chunk = 0; chunk < 8; ++chunk) {
+                    const std::string update = "\033[1;1Hburst-" +
+                        std::to_string(iteration) + '-' +
+                        std::to_string(chunk);
+                    sakura_terminal_feed_output(core, update.data(),
+                                                update.size());
+                }
+                break;
+            case ScenarioKind::LargeScreen: {
+                const std::string update = "\033[10;1Hlarge-" +
+                    std::to_string(iteration) + " 界é";
+                sakura_terminal_feed_output(core, update.data(), update.size());
+                break;
+            }
+            case ScenarioKind::Resize:
+                frame->SetClientSize(iteration % 2 == 0
+                    ? wxSize(1280, 720) : wxSize(1024, 600));
+                frame->Layout();
+                break;
+            case ScenarioKind::Scroll: {
+                const std::string update = "scroll-" +
+                    std::to_string(iteration) + " payload=0123456789\r\n";
                 sakura_terminal_feed_output(core, update.data(), update.size());
                 break;
             }
@@ -177,10 +249,15 @@ private:
                   << metrics.partial_repaints << '\t'
                   << metrics.painted_cells << '\t'
                   << metrics.paint_time_us << '\t'
+                  << metrics.max_paint_time_us << '\t'
                   << metrics.full_refresh_requests << '\t'
                   << metrics.dirty_refresh_requests << '\t'
                   << metrics.glyph_run_cache_hits << '\t'
-                  << metrics.glyph_run_cache_misses << '\n';
+                  << metrics.glyph_run_cache_misses << '\t'
+                  << metrics.background_rectangles << '\t'
+                  << metrics.glyph_bitmap_draws << '\t'
+                  << metrics.glyph_text_draws << '\t'
+                  << metrics.dc_state_changes << '\n';
 
         frame->Destroy();
         wxYield();

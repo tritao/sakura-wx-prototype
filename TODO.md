@@ -41,8 +41,10 @@ cross-platform terminal library and a Sakura frontend foundation.
   - Report feed, packed-frame, and row-run access timings.
   - Cover full repaint, partial repaint, Unicode/wide/combining output,
     scrollback, and clean row-run traversal.
-- [ ] Expand the benchmark matrix with burst output, resize, selection,
-  large-screen, and cached-versus-uncached renderer comparisons.
+- [x] Expand the benchmark matrix with burst output, resize, selection,
+  large-screen, scrolling, and cached-versus-uncached renderer comparisons.
+  - Report background rectangle batching, bitmap/text draw paths, DC state
+    changes, and maximum per-frame paint time.
 
 ## Transport reliability and portability
 

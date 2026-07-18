@@ -159,8 +159,15 @@ cmake --build build --target sakura-terminal-core-benchmark -j
 ./build/sakura-terminal-core-benchmark
 ```
 
-The wx paint benchmark also reports full/partial paints, painted cells, and
-glyph-run cache hits/misses for ASCII, Unicode, cursor, and selection workloads.
+The wx paint benchmark also reports full/partial paints, painted cells, maximum
+frame paint time, glyph-cache hits/misses, background rectangles, bitmap versus
+direct text draws, and DC state changes. Its matrix covers full and partial
+ASCII, cached versus uncached Unicode/wide/combining output, burst output,
+large screens, resize, scrolling, cursor, and selection workloads:
+
+```sh
+xvfb-run -a ./build/sakura-wx-paint-benchmark
+```
 
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,

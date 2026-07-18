@@ -497,6 +497,7 @@ const wxBitmap& WxTerminalCtrl::GlyphRunBitmap(
 
     const wxFont& font = GlyphFont(run.attributes);
     dc.SetFont(font);
+    ++impl_->paint_metrics_.dc_state_changes;
     const wxSize measured_size = dc.GetTextExtent(text);
     const int run_width = static_cast<int>(run.cell_count) *
         impl_->cell_width_;
@@ -542,20 +543,80 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
         return;
 
     dc.SetPen(*wxTRANSPARENT_PEN);
+    ++impl_->paint_metrics_.dc_state_changes;
     dc.SetBrush(impl_->background_brush_);
+    ++impl_->paint_metrics_.dc_state_changes;
     dc.DrawRectangle(left * impl_->cell_width_, top * impl_->cell_height_,
                      (right - left) * impl_->cell_width_,
                      (bottom - top) * impl_->cell_height_);
-    dc.SetFont(impl_->font_);
+    ++impl_->paint_metrics_.background_rectangles;
+
+    const uint32_t default_background = ColorKey(impl_->config_.background);
 
     for (unsigned int row = top; row < bottom; ++row) {
         const std::size_t run_count =
             sakura_terminal_frame_row_run_count(frame, row);
+        std::vector<SakuraTerminalRunView> row_runs;
+        row_runs.reserve(run_count);
         for (std::size_t index = 0; index < run_count; ++index) {
             SakuraTerminalRunView run {};
-            if (!sakura_terminal_frame_row_run(frame, row, index, &run))
+            if (sakura_terminal_frame_row_run(frame, row, index, &run))
+                row_runs.push_back(run);
+        }
+
+        bool pending_background = false;
+        uint32_t pending_background_key = 0;
+        std::array<uint8_t, 3> pending_background_color {};
+        unsigned int pending_background_left = 0;
+        unsigned int pending_background_right = 0;
+        const auto flush_background = [&]() {
+            if (!pending_background)
+                return;
+            dc.SetBrush(impl_->ColorResourcesFor(
+                pending_background_color).brush);
+            ++impl_->paint_metrics_.dc_state_changes;
+            dc.DrawRectangle(
+                pending_background_left * impl_->cell_width_,
+                row * impl_->cell_height_,
+                (pending_background_right - pending_background_left) *
+                    impl_->cell_width_,
+                impl_->cell_height_);
+            ++impl_->paint_metrics_.background_rectangles;
+            pending_background = false;
+        };
+
+        for (const SakuraTerminalRunView& run : row_runs) {
+
+            const unsigned int run_right = std::min(
+                info.columns, run.left + std::max(1u, run.cell_count));
+            const unsigned int draw_left = std::max(left, run.left);
+            const unsigned int draw_right = std::min(right, run_right);
+            if (draw_left >= draw_right)
                 continue;
 
+            const std::array<uint8_t, 3> background {
+                run.background[0], run.background[1], run.background[2]};
+            const uint32_t background_key = ColorKey(background);
+            if (background_key == default_background) {
+                flush_background();
+                continue;
+            }
+            if (!pending_background ||
+                pending_background_key != background_key ||
+                pending_background_right != draw_left) {
+                flush_background();
+                pending_background = true;
+                pending_background_key = background_key;
+                pending_background_color = background;
+                pending_background_left = draw_left;
+                pending_background_right = draw_right;
+            } else {
+                pending_background_right = draw_right;
+            }
+        }
+        flush_background();
+
+        for (const SakuraTerminalRunView& run : row_runs) {
             const unsigned int run_right = std::min(
                 info.columns, run.left + std::max(1u, run.cell_count));
             const unsigned int draw_left = std::max(left, run.left);
@@ -569,13 +630,6 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
                 run.foreground[0], run.foreground[1], run.foreground[2]};
             const std::array<uint8_t, 3> background {
                 run.background[0], run.background[1], run.background[2]};
-            dc.SetBrush(impl_->ColorResourcesFor(background).brush);
-            dc.DrawRectangle(draw_left * impl_->cell_width_,
-                             row * impl_->cell_height_,
-                             (draw_right - draw_left) * impl_->cell_width_,
-                             impl_->cell_height_);
-            dc.SetTextForeground(impl_->ColorResourcesFor(foreground).color);
-            dc.SetFont(GlyphFont(run.attributes));
 
             bool has_glyph = false;
             for (std::size_t text_index = 0; text_index < run.text_length;
@@ -588,27 +642,44 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
             if (has_glyph && run.text_length > 0) {
                 const wxString& glyph = GlyphText(run.text, run.text_length);
                 if (!glyph.empty()) {
-                    const wxBitmap& glyph_bitmap = GlyphRunBitmap(
-                        dc, run, glyph, foreground, background);
-                    if (glyph_bitmap.IsOk()) {
-                        dc.DrawBitmap(glyph_bitmap,
-                                      run.left * impl_->cell_width_,
-                                      row * impl_->cell_height_, false);
+                    if (impl_->config_.glyph_cache_enabled) {
+                        const wxBitmap& glyph_bitmap = GlyphRunBitmap(
+                            dc, run, glyph, foreground, background);
+                        if (glyph_bitmap.IsOk()) {
+                            dc.DrawBitmap(glyph_bitmap,
+                                          run.left * impl_->cell_width_,
+                                          row * impl_->cell_height_, false);
+                            ++impl_->paint_metrics_.glyph_bitmap_draws;
+                        } else {
+                            dc.SetTextForeground(
+                                impl_->ColorResourcesFor(foreground).color);
+                            ++impl_->paint_metrics_.dc_state_changes;
+                            dc.SetFont(GlyphFont(run.attributes));
+                            ++impl_->paint_metrics_.dc_state_changes;
+                            dc.DrawText(glyph, run.left * impl_->cell_width_,
+                                        row * impl_->cell_height_);
+                            ++impl_->paint_metrics_.glyph_text_draws;
+                        }
                     } else {
                         dc.SetTextForeground(
                             impl_->ColorResourcesFor(foreground).color);
+                        ++impl_->paint_metrics_.dc_state_changes;
                         dc.SetFont(GlyphFont(run.attributes));
+                        ++impl_->paint_metrics_.dc_state_changes;
                         dc.DrawText(glyph, run.left * impl_->cell_width_,
                                     row * impl_->cell_height_);
+                        ++impl_->paint_metrics_.glyph_text_draws;
                     }
                 }
             }
             if ((run.attributes & 0x04) != 0) {
                 dc.SetPen(impl_->ColorResourcesFor(foreground).pen);
+                ++impl_->paint_metrics_.dc_state_changes;
                 const int underline_y = (row + 1) * impl_->cell_height_ - 2;
                 dc.DrawLine(draw_left * impl_->cell_width_, underline_y,
                             draw_right * impl_->cell_width_ - 1, underline_y);
                 dc.SetPen(*wxTRANSPARENT_PEN);
+                ++impl_->paint_metrics_.dc_state_changes;
             }
         }
     }
@@ -619,7 +690,9 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
     if (cursor_in_dirty_region && info.cursor_visible &&
         info.cursor_x < info.columns && info.cursor_y < info.rows) {
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        ++impl_->paint_metrics_.dc_state_changes;
         dc.SetPen(wxPen(wxColour(230, 230, 230), 1));
+        ++impl_->paint_metrics_.dc_state_changes;
         const int cursor_x = info.cursor_x * impl_->cell_width_;
         const int cursor_y = info.cursor_y * impl_->cell_height_;
         switch (info.cursor_style) {
