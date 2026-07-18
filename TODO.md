@@ -53,6 +53,8 @@ cross-platform terminal library and a Sakura frontend foundation.
   profiling matrix for 2/4/8/16 MiB cache limits.
 - [x] Aggregate repeated cache profiles and bypass one-shot glyph cache
   admission during scroll repainting.
+- [x] Chunk long glyph runs at 32 cells, eliminate full-screen cache churn,
+  and reduce the default wx glyph cache limit to 4 MiB.
 
 ## Transport reliability and portability
 

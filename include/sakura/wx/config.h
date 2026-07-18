@@ -19,7 +19,8 @@ struct TerminalConfig {
     bool start_transport = true;
     bool glyph_cache_enabled = true;
     bool glyph_cache_bypass_scroll = true;
-    std::size_t glyph_cache_max_bytes = 8u * 1024u * 1024u;
+    unsigned int glyph_cache_max_run_cells = 32;
+    std::size_t glyph_cache_max_bytes = 4u * 1024u * 1024u;
     std::size_t glyph_cache_max_entries = 1024;
 };
 
@@ -40,6 +41,7 @@ struct WxPaintMetrics {
     uint64_t glyph_run_cache_hits = 0;
     uint64_t glyph_run_cache_misses = 0;
     uint64_t glyph_run_cache_bypasses = 0;
+    uint64_t glyph_run_cache_chunked_runs = 0;
     uint64_t glyph_run_cache_evictions = 0;
     uint64_t glyph_run_cache_entries = 0;
     uint64_t glyph_run_cache_bytes = 0;

@@ -752,50 +752,107 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
             const std::array<uint8_t, 3> background {
                 run.background[0], run.background[1], run.background[2]};
 
-            bool has_glyph = false;
-            for (std::size_t text_index = 0; text_index < run.text_length;
-                 ++text_index) {
-                if (run.text[text_index] != ' ') {
-                    has_glyph = true;
-                    break;
-                }
-            }
-            if (has_glyph && run.text_length > 0) {
-                const wxString& glyph = GlyphText(run.text, run.text_length);
-                if (!glyph.empty()) {
-                    if (cache_glyphs) {
-                        const wxBitmap& glyph_bitmap = GlyphRunBitmap(
-                            dc, run, glyph, foreground, background);
-                        if (glyph_bitmap.IsOk()) {
-                            dc.DrawBitmap(glyph_bitmap,
-                                          run.left * impl_->cell_width_,
-                                          row * impl_->cell_height_, false);
-                            ++impl_->paint_metrics_.glyph_bitmap_draws;
-                        } else {
-                            dc.SetTextForeground(
-                                impl_->ColorResourcesFor(foreground).color);
-                            ++impl_->paint_metrics_.dc_state_changes;
-                            dc.SetFont(GlyphFont(run.attributes));
-                            ++impl_->paint_metrics_.dc_state_changes;
-                            dc.DrawText(glyph, run.left * impl_->cell_width_,
-                                        row * impl_->cell_height_);
-                            ++impl_->paint_metrics_.glyph_text_draws;
-                        }
+            const auto draw_glyph_run = [&](const SakuraTerminalRunView& glyph_run,
+                                            const wxString& glyph) {
+                if (cache_glyphs) {
+                    const wxBitmap& glyph_bitmap = GlyphRunBitmap(
+                        dc, glyph_run, glyph, foreground, background);
+                    if (glyph_bitmap.IsOk()) {
+                        dc.DrawBitmap(glyph_bitmap,
+                                      glyph_run.left * impl_->cell_width_,
+                                      row * impl_->cell_height_, false);
+                        ++impl_->paint_metrics_.glyph_bitmap_draws;
                     } else {
-                        if (impl_->config_.glyph_cache_enabled &&
-                            impl_->config_.glyph_cache_bypass_scroll &&
-                            info.scroll_delta != 0)
-                            ++impl_->paint_metrics_.glyph_run_cache_bypasses;
                         dc.SetTextForeground(
                             impl_->ColorResourcesFor(foreground).color);
                         ++impl_->paint_metrics_.dc_state_changes;
-                        dc.SetFont(GlyphFont(run.attributes));
+                        dc.SetFont(GlyphFont(glyph_run.attributes));
                         ++impl_->paint_metrics_.dc_state_changes;
-                        dc.DrawText(glyph, run.left * impl_->cell_width_,
+                        dc.DrawText(glyph,
+                                    glyph_run.left * impl_->cell_width_,
                                     row * impl_->cell_height_);
                         ++impl_->paint_metrics_.glyph_text_draws;
                     }
+                } else {
+                    if (impl_->config_.glyph_cache_enabled &&
+                        impl_->config_.glyph_cache_bypass_scroll &&
+                        info.scroll_delta != 0)
+                        ++impl_->paint_metrics_.glyph_run_cache_bypasses;
+                    dc.SetTextForeground(
+                        impl_->ColorResourcesFor(foreground).color);
+                    ++impl_->paint_metrics_.dc_state_changes;
+                    dc.SetFont(GlyphFont(glyph_run.attributes));
+                    ++impl_->paint_metrics_.dc_state_changes;
+                    dc.DrawText(glyph,
+                                glyph_run.left * impl_->cell_width_,
+                                row * impl_->cell_height_);
+                    ++impl_->paint_metrics_.glyph_text_draws;
                 }
+            };
+
+            const auto draw_text_run = [&](const SakuraTerminalRunView& text_run) {
+                bool has_glyph = false;
+                for (std::size_t text_index = 0;
+                     text_index < text_run.text_length; ++text_index) {
+                    if (text_run.text[text_index] != ' ') {
+                        has_glyph = true;
+                        break;
+                    }
+                }
+                if (!has_glyph || text_run.text_length == 0)
+                    return;
+                const wxString& glyph = GlyphText(
+                    text_run.text, text_run.text_length);
+                if (!glyph.empty())
+                    draw_glyph_run(text_run, glyph);
+            };
+
+            const unsigned int max_chunk_cells = std::max(
+                1u, impl_->config_.glyph_cache_max_run_cells);
+            if (cache_glyphs && run.cell_count > max_chunk_cells) {
+                ++impl_->paint_metrics_.glyph_run_cache_chunked_runs;
+                unsigned int cell_offset = 0;
+                while (cell_offset < run.cell_count) {
+                    unsigned int chunk_cells = std::min(
+                        max_chunk_cells, run.cell_count - cell_offset);
+                    if (chunk_cells < run.cell_count - cell_offset &&
+                        chunk_cells > 1) {
+                        SakuraTerminalCellView boundary {};
+                        if (sakura_terminal_frame_cell(
+                                frame, run.left + cell_offset + chunk_cells - 1,
+                                row, &boundary) && boundary.width == 2)
+                            --chunk_cells;
+                    }
+
+                    std::string chunk_text;
+                    bool valid_chunk = true;
+                    for (unsigned int chunk_offset = 0;
+                         chunk_offset < chunk_cells; ++chunk_offset) {
+                        SakuraTerminalCellView cell {};
+                        if (!sakura_terminal_frame_cell(
+                                frame, run.left + cell_offset + chunk_offset,
+                                row, &cell)) {
+                            valid_chunk = false;
+                            break;
+                        }
+                        if (cell.text != nullptr && cell.text_length > 0)
+                            chunk_text.append(cell.text, cell.text_length);
+                    }
+                    if (!valid_chunk || chunk_cells == 0) {
+                        draw_text_run(run);
+                        break;
+                    }
+
+                    SakuraTerminalRunView chunk = run;
+                    chunk.left = run.left + cell_offset;
+                    chunk.cell_count = chunk_cells;
+                    chunk.text = chunk_text.data();
+                    chunk.text_length = chunk_text.size();
+                    draw_text_run(chunk);
+                    cell_offset += chunk_cells;
+                }
+            } else {
+                draw_text_run(run);
             }
             if ((run.attributes & 0x04) != 0) {
                 dc.SetPen(impl_->ColorResourcesFor(foreground).pen);

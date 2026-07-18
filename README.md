@@ -189,9 +189,9 @@ REPEATS=10 OUTPUT_DIR=/tmp/sakura-wx-profile \
   ./scripts/run_wx_paint_profile.sh
 ```
 
-The current policy keeps the default glyph cache at 8 MiB: repeated local
-profiles showed 4 MiB can churn during full-screen repaint, while the scroll
-renderer bypasses one-shot newly exposed rows to avoid polluting the cache.
+The current policy uses a 4 MiB default glyph cache: bounded run chunking keeps
+full-screen profiles below that limit, while the scroll renderer bypasses
+one-shot newly exposed rows to avoid polluting the cache.
 
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,

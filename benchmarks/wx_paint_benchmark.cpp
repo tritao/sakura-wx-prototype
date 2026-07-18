@@ -33,6 +33,7 @@ struct MetricDelta {
     std::uint64_t glyph_run_cache_hits = 0;
     std::uint64_t glyph_run_cache_misses = 0;
     std::uint64_t glyph_run_cache_bypasses = 0;
+    std::uint64_t glyph_run_cache_chunked_runs = 0;
     std::uint64_t glyph_run_cache_evictions = 0;
     std::uint64_t glyph_run_cache_entries = 0;
     std::uint64_t glyph_run_cache_bytes = 0;
@@ -63,6 +64,7 @@ MetricDelta Difference(const WxPaintMetrics& before,
         after.glyph_run_cache_hits - before.glyph_run_cache_hits,
         after.glyph_run_cache_misses - before.glyph_run_cache_misses,
         after.glyph_run_cache_bypasses - before.glyph_run_cache_bypasses,
+        after.glyph_run_cache_chunked_runs - before.glyph_run_cache_chunked_runs,
         after.glyph_run_cache_evictions - before.glyph_run_cache_evictions,
         after.glyph_run_cache_entries,
         after.glyph_run_cache_bytes,
@@ -133,7 +135,7 @@ struct ScenarioResult {
 
 struct BenchmarkOptions {
     bool json = false;
-    std::size_t cache_max_bytes = 8u * 1024u * 1024u;
+    std::size_t cache_max_bytes = 4u * 1024u * 1024u;
     std::size_t cache_max_entries = 1024;
 };
 
@@ -279,7 +281,8 @@ private:
                      "p95_paint_us\tp99_paint_us\tmax_paint_us\t"
                      "full_refreshes\tdirty_refreshes\t"
                      "glyph_cache_hits\tglyph_cache_misses\t"
-                     "glyph_cache_bypasses\tglyph_cache_evictions\t"
+                     "glyph_cache_bypasses\tglyph_cache_chunked_runs\t"
+                     "glyph_cache_evictions\t"
                      "glyph_cache_entries\t"
                      "glyph_cache_bytes\tglyph_cache_peak_bytes\t"
                      "background_rectangles\tglyph_bitmap_draws\t"
@@ -306,6 +309,7 @@ private:
                       << metrics.glyph_run_cache_hits << '\t'
                       << metrics.glyph_run_cache_misses << '\t'
                       << metrics.glyph_run_cache_bypasses << '\t'
+                      << metrics.glyph_run_cache_chunked_runs << '\t'
                       << metrics.glyph_run_cache_evictions << '\t'
                       << metrics.glyph_run_cache_entries << '\t'
                       << metrics.glyph_run_cache_bytes << '\t'
@@ -354,6 +358,7 @@ private:
                       << "        \"glyph_cache_hits\": " << metrics.glyph_run_cache_hits << ",\n"
                       << "        \"glyph_cache_misses\": " << metrics.glyph_run_cache_misses << ",\n"
                       << "        \"glyph_cache_bypasses\": " << metrics.glyph_run_cache_bypasses << ",\n"
+                      << "        \"glyph_cache_chunked_runs\": " << metrics.glyph_run_cache_chunked_runs << ",\n"
                       << "        \"glyph_cache_evictions\": " << metrics.glyph_run_cache_evictions << ",\n"
                       << "        \"glyph_cache_entries\": " << metrics.glyph_run_cache_entries << ",\n"
                       << "        \"glyph_cache_bytes\": " << metrics.glyph_run_cache_bytes << ",\n"

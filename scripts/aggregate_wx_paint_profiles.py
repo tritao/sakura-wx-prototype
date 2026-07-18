@@ -9,7 +9,13 @@ import statistics
 from pathlib import Path
 
 
-SCENARIOS = ("partial-unicode", "glyph-cache-churn", "scroll")
+SCENARIOS = (
+    "full-ascii",
+    "large-screen",
+    "partial-unicode",
+    "glyph-cache-churn",
+    "scroll",
+)
 METRICS = (
     "p50_paint_us",
     "p95_paint_us",
@@ -17,6 +23,7 @@ METRICS = (
     "glyph_cache_bytes",
     "glyph_cache_peak_bytes",
     "glyph_cache_bypasses",
+    "glyph_cache_chunked_runs",
     "glyph_cache_evictions",
 )
 
