@@ -671,6 +671,8 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
     ++impl_->paint_metrics_.background_rectangles;
 
     const uint32_t default_background = ColorKey(impl_->config_.background);
+    const bool cache_glyphs = impl_->config_.glyph_cache_enabled &&
+        (!impl_->config_.glyph_cache_bypass_scroll || info.scroll_delta == 0);
 
     for (unsigned int row = top; row < bottom; ++row) {
         const std::size_t run_count =
@@ -761,7 +763,7 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
             if (has_glyph && run.text_length > 0) {
                 const wxString& glyph = GlyphText(run.text, run.text_length);
                 if (!glyph.empty()) {
-                    if (impl_->config_.glyph_cache_enabled) {
+                    if (cache_glyphs) {
                         const wxBitmap& glyph_bitmap = GlyphRunBitmap(
                             dc, run, glyph, foreground, background);
                         if (glyph_bitmap.IsOk()) {
@@ -780,6 +782,10 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
                             ++impl_->paint_metrics_.glyph_text_draws;
                         }
                     } else {
+                        if (impl_->config_.glyph_cache_enabled &&
+                            impl_->config_.glyph_cache_bypass_scroll &&
+                            info.scroll_delta != 0)
+                            ++impl_->paint_metrics_.glyph_run_cache_bypasses;
                         dc.SetTextForeground(
                             impl_->ColorResourcesFor(foreground).color);
                         ++impl_->paint_metrics_.dc_state_changes;
@@ -1367,7 +1373,8 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          "mouse=%llu/%llu modes=%llu "
                          "paint=%llu full/%llu partial cells=%llu "
                          "paint-us=%llu/%llu/%llu max=%llu refresh=%llu/%llu dirty "
-                         "glyph-cache=%llu/%llu evictions=%llu bytes=%llu/%llu "
+                         "glyph-cache=%llu/%llu bypass=%llu evictions=%llu "
+                         "bytes=%llu/%llu "
                          "transport-read=%lluB/%llu "
                          "queue-high-water=%llu resize=%llu\n",
                          static_cast<unsigned long long>(core_metrics.output_bytes),
@@ -1394,6 +1401,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          static_cast<unsigned long long>(impl_->paint_metrics_.dirty_refresh_requests),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_hits),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_misses),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_bypasses),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_evictions),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_bytes),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_peak_bytes),

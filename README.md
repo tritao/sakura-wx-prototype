@@ -178,13 +178,20 @@ under CTest and checks cache byte/entry limits, LRU churn, and cached versus
 uncached draw-path behavior. It intentionally does not gate on wall-clock
 timings, which are display-server and build-mode dependent.
 
-For release-mode profiling across 2, 4, 8, and 16 MiB cache limits, use the
-profiling helper. It stores one JSON result per cache size in
-`benchmark-results/`:
+For repeated release-mode profiling across 2, 4, 8, and 16 MiB cache limits,
+use the profiling helper. It defaults to five runs per cache size and stores
+the raw JSON runs plus a median summary in `benchmark-results/`:
 
 ```sh
 ./scripts/run_wx_paint_profile.sh
+# Override repetition count or output location when iterating locally.
+REPEATS=10 OUTPUT_DIR=/tmp/sakura-wx-profile \
+  ./scripts/run_wx_paint_profile.sh
 ```
+
+The current policy keeps the default glyph cache at 8 MiB: repeated local
+profiles showed 4 MiB can churn during full-screen repaint, while the scroll
+renderer bypasses one-shot newly exposed rows to avoid polluting the cache.
 
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,

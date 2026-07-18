@@ -32,6 +32,7 @@ struct MetricDelta {
     std::uint64_t dirty_refresh_requests = 0;
     std::uint64_t glyph_run_cache_hits = 0;
     std::uint64_t glyph_run_cache_misses = 0;
+    std::uint64_t glyph_run_cache_bypasses = 0;
     std::uint64_t glyph_run_cache_evictions = 0;
     std::uint64_t glyph_run_cache_entries = 0;
     std::uint64_t glyph_run_cache_bytes = 0;
@@ -61,6 +62,7 @@ MetricDelta Difference(const WxPaintMetrics& before,
         after.dirty_refresh_requests - before.dirty_refresh_requests,
         after.glyph_run_cache_hits - before.glyph_run_cache_hits,
         after.glyph_run_cache_misses - before.glyph_run_cache_misses,
+        after.glyph_run_cache_bypasses - before.glyph_run_cache_bypasses,
         after.glyph_run_cache_evictions - before.glyph_run_cache_evictions,
         after.glyph_run_cache_entries,
         after.glyph_run_cache_bytes,
@@ -261,6 +263,10 @@ private:
             (metrics.glyph_bitmap_draws != 0 || metrics.glyph_text_draws == 0)) {
             fail("uncached Unicode did not use direct text draws");
         }
+        if (result.kind == ScenarioKind::Scroll &&
+            metrics.glyph_run_cache_bypasses == 0) {
+            fail("scroll did not bypass one-shot glyph cache entries");
+        }
         return valid;
     }
 
@@ -273,7 +279,8 @@ private:
                      "p95_paint_us\tp99_paint_us\tmax_paint_us\t"
                      "full_refreshes\tdirty_refreshes\t"
                      "glyph_cache_hits\tglyph_cache_misses\t"
-                     "glyph_cache_evictions\tglyph_cache_entries\t"
+                     "glyph_cache_bypasses\tglyph_cache_evictions\t"
+                     "glyph_cache_entries\t"
                      "glyph_cache_bytes\tglyph_cache_peak_bytes\t"
                      "background_rectangles\tglyph_bitmap_draws\t"
                      "glyph_text_draws\tdc_state_changes\n";
@@ -298,6 +305,7 @@ private:
                       << metrics.dirty_refresh_requests << '\t'
                       << metrics.glyph_run_cache_hits << '\t'
                       << metrics.glyph_run_cache_misses << '\t'
+                      << metrics.glyph_run_cache_bypasses << '\t'
                       << metrics.glyph_run_cache_evictions << '\t'
                       << metrics.glyph_run_cache_entries << '\t'
                       << metrics.glyph_run_cache_bytes << '\t'
@@ -345,6 +353,7 @@ private:
                       << "        \"dirty_refreshes\": " << metrics.dirty_refresh_requests << ",\n"
                       << "        \"glyph_cache_hits\": " << metrics.glyph_run_cache_hits << ",\n"
                       << "        \"glyph_cache_misses\": " << metrics.glyph_run_cache_misses << ",\n"
+                      << "        \"glyph_cache_bypasses\": " << metrics.glyph_run_cache_bypasses << ",\n"
                       << "        \"glyph_cache_evictions\": " << metrics.glyph_run_cache_evictions << ",\n"
                       << "        \"glyph_cache_entries\": " << metrics.glyph_run_cache_entries << ",\n"
                       << "        \"glyph_cache_bytes\": " << metrics.glyph_run_cache_bytes << ",\n"

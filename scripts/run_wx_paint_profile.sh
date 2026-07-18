@@ -6,6 +6,7 @@ BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build-relwithdebinfo}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/benchmark-results}"
 BUILD_TYPE="${BUILD_TYPE:-RelWithDebInfo}"
 CACHE_SIZES="${CACHE_SIZES:-2097152 4194304 8388608 16777216}"
+REPEATS="${REPEATS:-5}"
 
 if [[ -n "${JOBS:-}" ]]; then
     PARALLEL="${JOBS}"
@@ -44,9 +45,15 @@ else
     RUNNER=()
 fi
 
-for cache_bytes in "${cache_sizes[@]}"; do
-    output="${OUTPUT_DIR}/wx-paint-${cache_bytes}.json"
-    echo "running wx paint profile with ${cache_bytes} cache bytes -> ${output}"
-    "${RUNNER[@]}" "${BENCHMARK}" --json \
-        "--cache-bytes=${cache_bytes}" > "${output}"
+for repeat in $(seq 1 "${REPEATS}"); do
+    for cache_bytes in "${cache_sizes[@]}"; do
+        output="${OUTPUT_DIR}/wx-paint-run-${repeat}-${cache_bytes}.json"
+        echo "running wx paint profile ${repeat}/${REPEATS} with ${cache_bytes} cache bytes -> ${output}"
+        "${RUNNER[@]}" "${BENCHMARK}" --json \
+            "--cache-bytes=${cache_bytes}" > "${output}"
+    done
 done
+
+python3 "${ROOT_DIR}/scripts/aggregate_wx_paint_profiles.py" \
+    --input-dir "${OUTPUT_DIR}" \
+    --output "${OUTPUT_DIR}/wx-paint-summary.json"

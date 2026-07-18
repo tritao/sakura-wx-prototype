@@ -51,6 +51,8 @@ cross-platform terminal library and a Sakura frontend foundation.
   checks without using noisy wall-clock thresholds.
 - [x] Add rolling p50/p95/p99 paint latency metrics and a RelWithDebInfo wx
   profiling matrix for 2/4/8/16 MiB cache limits.
+- [x] Aggregate repeated cache profiles and bypass one-shot glyph cache
+  admission during scroll repainting.
 
 ## Transport reliability and portability
 
