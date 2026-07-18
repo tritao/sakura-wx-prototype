@@ -150,7 +150,7 @@ For an instrumented run with AddressSanitizer and UndefinedBehaviorSanitizer:
 BUILD_DIR=build-sanitize SAKURA_ENABLE_SANITIZERS=ON RUN_TESTS=1 ./build.sh
 ```
 
-The core tests use semantic screen snapshots, while the PTY stress test exercises burst output, repeated resize, child completion, and shutdown. Transport lifecycle tests cover clean exit and failed shell startup. The wx smoke and UX tests run the real window under Xvfb when available.
+The core tests use semantic screen snapshots, while the PTY stress test exercises burst output, repeated resize, child completion, and shutdown. Transport lifecycle tests cover clean exit and failed shell startup. The wx smoke and UX tests run the real window under Xvfb when available; `wx_interrupt` drives the real wx window and PTY through `yes`, Ctrl-C, shell input, and a painted marker.
 
 With `SAKURA_BUILD_BENCHMARKS=ON`, the terminal-core benchmark reports average
 feed, packed-frame, and row-run access time for full repaint, partial repaint,

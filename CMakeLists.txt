@@ -394,6 +394,14 @@ if(BUILD_TESTING)
             TIMEOUT 10
             ENVIRONMENT "SAKURA_WX_SMOKE_TEST=1;SAKURA_WX_SCENARIO_TEST=1;ASAN_OPTIONS=detect_leaks=0"
         )
+        add_test(NAME wx_interrupt
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/wx_interrupt_test.sh"
+                    "$<TARGET_FILE:sakura-wx-prototype>"
+        )
+        set_tests_properties(wx_interrupt PROPERTIES
+            TIMEOUT 20
+            ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
+        )
         if(TARGET sakura-wx-paint-benchmark)
             add_test(NAME wx_paint_regression
                 COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/wx_smoke_test.sh"

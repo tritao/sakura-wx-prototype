@@ -6,7 +6,10 @@
 #include <wx/dataobj.h>
 #include <wx/wx.h>
 
+#include <chrono>
 #include <cstdlib>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -111,10 +114,12 @@ bool RunScenario(WxTerminalCtrl& terminal)
 class SakuraWxApp final : public wxApp {
 public:
     SakuraWxApp()
-        : smoke_timer_(this)
+        : smoke_timer_(this), interrupt_timer_(this)
     {
         Bind(wxEVT_TIMER, &SakuraWxApp::OnSmokeTimer, this,
              smoke_timer_.GetId());
+        Bind(wxEVT_TIMER, &SakuraWxApp::OnInterruptTimer, this,
+             interrupt_timer_.GetId());
     }
 
     bool OnInit() override
@@ -122,8 +127,10 @@ public:
         auto* frame = new wxFrame(nullptr, wxID_ANY,
                                   "Sakura wx prototype — libtsm",
                                   wxDefaultPosition, wxSize(960, 540));
+        interrupt_test_ = std::getenv("SAKURA_WX_INTERRUPT_TEST") != nullptr;
+        interrupt_started_ = std::chrono::steady_clock::now();
         TerminalCallbacks callbacks;
-        callbacks.on_title_changed = [frame](const std::string& title) {
+        callbacks.on_title_changed = [this, frame](const std::string& title) {
             wxString caption = "Sakura wx prototype — libtsm";
             if (!title.empty()) {
                 wxString terminal_title = wxString::FromUTF8(title.c_str());
@@ -134,6 +141,12 @@ public:
                 caption += " — " + terminal_title;
             }
             frame->SetTitle(caption);
+            if (interrupt_test_ && title == "sakura-wx-interrupt-ok" &&
+                interrupt_terminal_ != nullptr) {
+                interrupt_marker_seen_ = true;
+                interrupt_paints_at_marker_ =
+                    interrupt_terminal_->GetPaintMetrics().paint_events;
+            }
         };
         TerminalConfig config;
         if (std::getenv("SAKURA_WX_SCENARIO_TEST") != nullptr)
@@ -146,13 +159,21 @@ public:
         frame->SetSizer(sizer);
         frame->Show();
         terminal->SetFocus();
+        interrupt_terminal_ = terminal;
 
         if (std::getenv("SAKURA_WX_SCENARIO_TEST") != nullptr &&
             !RunScenario(*terminal))
             return false;
-        if (std::getenv("SAKURA_WX_SMOKE_TEST") != nullptr)
+        if (interrupt_test_)
+            interrupt_timer_.Start(10);
+        else if (std::getenv("SAKURA_WX_SMOKE_TEST") != nullptr)
             smoke_timer_.StartOnce(300);
         return true;
+    }
+
+    int OnExit() override
+    {
+        return interrupt_test_ ? interrupt_exit_code_ : 0;
     }
 
 private:
@@ -161,7 +182,46 @@ private:
         ExitMainLoop();
     }
 
+    void OnInterruptTimer(wxTimerEvent&)
+    {
+        if (!interrupt_test_ || interrupt_terminal_ == nullptr)
+            return;
+
+        const WxPaintMetrics metrics = interrupt_terminal_->GetPaintMetrics();
+        if (interrupt_marker_seen_ &&
+            metrics.paint_events > interrupt_paints_at_marker_) {
+            std::fprintf(stderr,
+                         "wx interrupt e2e: PASS paint_events=%llu\n",
+                         static_cast<unsigned long long>(metrics.paint_events));
+            interrupt_exit_code_ = 0;
+            interrupt_timer_.Stop();
+            ExitMainLoop();
+            return;
+        }
+
+        if (std::chrono::steady_clock::now() - interrupt_started_ >=
+            std::chrono::seconds(10)) {
+            std::fprintf(stderr,
+                         "wx interrupt e2e: FAIL marker_seen=%d "
+                         "paint_events=%llu paints_at_marker=%llu\n",
+                         interrupt_marker_seen_ ? 1 : 0,
+                         static_cast<unsigned long long>(metrics.paint_events),
+                         static_cast<unsigned long long>(
+                             interrupt_paints_at_marker_));
+            interrupt_exit_code_ = 1;
+            interrupt_timer_.Stop();
+            ExitMainLoop();
+        }
+    }
+
     wxTimer smoke_timer_;
+    wxTimer interrupt_timer_;
+    WxTerminalCtrl* interrupt_terminal_ = nullptr;
+    std::chrono::steady_clock::time_point interrupt_started_;
+    uint64_t interrupt_paints_at_marker_ = 0;
+    bool interrupt_test_ = false;
+    bool interrupt_marker_seen_ = false;
+    int interrupt_exit_code_ = 1;
 };
 
 } // namespace
