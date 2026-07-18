@@ -92,6 +92,7 @@ target_link_libraries(sakura_transport PUBLIC Threads::Threads)
 
 add_library(sakura_wx_terminal STATIC
     src/wx/terminal_ctrl.cpp
+    src/wx/terminal_renderer.cpp
 )
 set_target_properties(sakura_wx_terminal PROPERTIES EXPORT_NAME WxTerminal)
 get_target_property(SAKURA_WX_CORE_INCLUDES wxcore INTERFACE_INCLUDE_DIRECTORIES)

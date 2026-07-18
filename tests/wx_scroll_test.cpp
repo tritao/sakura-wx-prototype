@@ -69,6 +69,25 @@ bool SamePixel(const unsigned char* left, const unsigned char* right)
            std::abs(static_cast<int>(left[2]) - right[2]) <= 5;
 }
 
+bool HasConfiguredRemainder(const wxBitmap& bitmap, int grid_height)
+{
+    const wxImage image = bitmap.ConvertToImage();
+    if (!image.IsOk() || grid_height < 0 ||
+        grid_height >= image.GetHeight())
+        return false;
+
+    const unsigned char* data = image.GetData();
+    for (int y = grid_height; y < image.GetHeight(); ++y) {
+        for (int x = 0; x < image.GetWidth(); ++x) {
+            const unsigned char* pixel = data +
+                (static_cast<std::size_t>(y) * image.GetWidth() + x) * 3;
+            if (!IsBackground(pixel))
+                return false;
+        }
+    }
+    return true;
+}
+
 std::size_t DifferentPixels(const wxBitmap& left, const wxBitmap& right)
 {
     const wxImage left_image = left.ConvertToImage();
@@ -217,9 +236,16 @@ int RunAnimationTest()
     config.scroll_animation_ms_per_line = 50;
     config.scroll_animation_max_ms = 100;
     WxTerminalCtrl terminal(&frame, nullptr, config);
-    terminal.SetSize(wxSize(640, 480));
     frame.Show();
     wxYield();
+
+    const int cell_height = std::max(1, terminal.GetCellSize().GetHeight());
+    const int target_height = cell_height * 24 +
+        std::max(1, cell_height / 2);
+    frame.SetClientSize(wxSize(640, target_height));
+    terminal.SetSize(wxSize(640, target_height));
+    wxYield();
+    terminal.Update();
 
     std::string output;
     for (unsigned int line = 0; line < 64; ++line)
@@ -230,6 +256,14 @@ int RunAnimationTest()
     terminal.Update();
     const WxPaintMetrics initial = terminal.GetPaintMetrics();
     const wxBitmap before = CaptureClient(terminal);
+    const wxSize client_size = terminal.GetClientSize();
+    const int grid_height = (client_size.GetHeight() / cell_height) *
+        cell_height;
+    if (grid_height >= client_size.GetHeight() ||
+        !HasConfiguredRemainder(before, grid_height)) {
+        std::cerr << "terminal remainder was not painted with the configured background\n";
+        return 12;
+    }
 
     constexpr int expected_lines = 2;
     SendWheel(terminal, 120, 120, expected_lines);
@@ -270,6 +304,12 @@ int RunAnimationTest()
             return 9;
         }
     }
+    for (const wxBitmap& animation_frame : animation_frames) {
+        if (!HasConfiguredRemainder(animation_frame, grid_height)) {
+            std::cerr << "scroll animation moved pixels into the terminal remainder\n";
+            return 13;
+        }
+    }
 
     if (sampled.scroll_animation_completions ==
             initial.scroll_animation_completions) {
@@ -278,6 +318,10 @@ int RunAnimationTest()
     }
     const WxPaintMetrics completed = terminal.GetPaintMetrics();
     const wxBitmap after = CaptureClient(terminal);
+    if (!HasConfiguredRemainder(after, grid_height)) {
+        std::cerr << "completed scroll lost the configured terminal remainder\n";
+        return 14;
+    }
     if (completed.scroll_animation_completions !=
             initial.scroll_animation_completions + 1 ||
         completed.scroll_animation_frames == initial.scroll_animation_frames) {

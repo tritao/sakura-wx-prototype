@@ -1,165 +1,25 @@
 #include <sakura/wx/terminal_ctrl.h>
 
-#include <tsm/libtsm.h>
+#include "terminal_renderer.h"
 
 #include <wx/clipbrd.h>
 #include <wx/dataobj.h>
 #include <wx/dcbuffer.h>
-#include <wx/dcmemory.h>
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <chrono>
-#include <cmath>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
-#include <iterator>
-#include <list>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <xkbcommon/xkbcommon-keysyms.h>
-
-namespace {
-
-uint32_t ColorKey(const std::array<uint8_t, 3>& color)
-{
-    return (static_cast<uint32_t>(color[0]) << 16) |
-           (static_cast<uint32_t>(color[1]) << 8) |
-           static_cast<uint32_t>(color[2]);
-}
-
-std::string ToUtf8(const wxString& value)
-{
-    const auto utf8 = value.ToUTF8();
-    if (utf8.data() == nullptr)
-        return {};
-    return {utf8.data(), utf8.length()};
-}
-
-wxFont CreateTerminalFont(const TerminalConfig& config)
-{
-    const int point_size = std::max(1, config.font_size);
-    wxFontInfo info(point_size);
-    info.Family(wxFONTFAMILY_TELETYPE);
-    if (!config.use_system_font)
-        info.FaceName(wxString::FromUTF8(config.font_family.c_str()));
-
-    wxFont font(info);
-    if (font.IsOk())
-        return font;
-
-    // Keep a usable monospace fallback if an explicitly requested face is
-    // unavailable on the current platform.
-    wxFontInfo fallback(point_size);
-    fallback.Family(wxFONTFAMILY_TELETYPE);
-    return wxFont(fallback);
-}
-
-void ScrollFramebuffer(wxMemoryDC& dc, int delta, unsigned int columns,
-                       unsigned int rows, int cell_width, int cell_height)
-{
-    if (delta == 0 || columns == 0 || rows == 0 || cell_width <= 0 ||
-        cell_height <= 0)
-        return;
-    const unsigned int distance = std::min(
-        static_cast<unsigned int>(std::abs(delta)), rows);
-    if (distance >= rows)
-        return;
-
-    const int width = static_cast<int>(columns) * cell_width;
-    const int height = static_cast<int>(rows - distance) * cell_height;
-    if (delta > 0) {
-        dc.Blit(0, 0, width, height, &dc, 0,
-                static_cast<int>(distance) * cell_height);
-    } else {
-        dc.Blit(0, static_cast<int>(distance) * cell_height, width, height,
-                &dc, 0, 0);
-    }
-}
-
-wxBitmap CloneBitmap(wxBitmap& source)
-{
-    if (!source.IsOk())
-        return {};
-    wxBitmap copy(source.GetWidth(), source.GetHeight(), -1);
-    if (!copy.IsOk())
-        return {};
-
-    wxMemoryDC source_dc;
-    source_dc.SelectObject(source);
-    wxMemoryDC copy_dc(copy);
-    copy_dc.Blit(0, 0, source.GetWidth(), source.GetHeight(), &source_dc,
-                 0, 0, wxCOPY);
-    copy_dc.SelectObject(wxNullBitmap);
-    source_dc.SelectObject(wxNullBitmap);
-    return copy;
-}
-
-struct GlyphRunKey {
-    std::string text;
-    uint32_t foreground = 0;
-    uint32_t background = 0;
-    std::size_t font_identity = 0;
-    unsigned int cell_count = 0;
-    uint8_t attributes = 0;
-    int cell_width = 0;
-    int cell_height = 0;
-    int dpi_x = 0;
-    int dpi_y = 0;
-
-    bool operator==(const GlyphRunKey& other) const
-    {
-        return text == other.text && foreground == other.foreground &&
-            background == other.background &&
-            font_identity == other.font_identity &&
-            cell_count == other.cell_count && attributes == other.attributes &&
-            cell_width == other.cell_width && cell_height == other.cell_height &&
-            dpi_x == other.dpi_x && dpi_y == other.dpi_y;
-    }
-};
-
-struct GlyphRunKeyHash {
-    std::size_t operator()(const GlyphRunKey& key) const
-    {
-        std::size_t hash = std::hash<std::string>{}(key.text);
-        const auto mix = [&hash](std::size_t value) {
-            hash ^= value + static_cast<std::size_t>(0x9e3779b9) +
-                (hash << 6) + (hash >> 2);
-        };
-        mix(key.foreground);
-        mix(key.background);
-        mix(key.font_identity);
-        mix(key.cell_count);
-        mix(key.attributes);
-        mix(static_cast<std::size_t>(key.cell_width));
-        mix(static_cast<std::size_t>(key.cell_height));
-        mix(static_cast<std::size_t>(key.dpi_x));
-        mix(static_cast<std::size_t>(key.dpi_y));
-        return hash;
-    }
-};
-
-struct GlyphRunResource {
-    wxBitmap bitmap;
-    wxSize measured_size;
-};
-
-struct GlyphRunCacheEntry {
-    GlyphRunResource resource;
-    std::size_t bytes = 0;
-    std::list<GlyphRunKey>::iterator lru;
-};
-
-} // namespace
 
 class WxTerminalCtrl::Impl {
 public:
@@ -168,15 +28,18 @@ public:
         : owner_(owner),
           config_(std::move(config)),
           callbacks_(std::move(callbacks)),
+          renderer_(owner, config_, paint_metrics_),
           output_timer_(&owner_),
           transport_(std::move(transport))
     {
         trace_scroll_ = std::getenv("SAKURA_TRACE_SCROLL") != nullptr;
         trace_keys_ = std::getenv("SAKURA_TRACE_KEYS") != nullptr;
-        core_ = sakura_terminal_new(&Impl::WriteBridge, this);
-        const auto& background = config_.background;
-        background_brush_ = wxBrush(wxColour(background[0], background[1],
-                                              background[2]));
+        SakuraTerminalTheme theme {};
+        sakura_terminal_theme_default(&theme);
+        std::copy(config_.background.begin(), config_.background.end(),
+                  theme.background);
+        core_ = sakura_terminal_new_with_theme(&Impl::WriteBridge, this,
+                                                &theme);
     }
 
     ~Impl()
@@ -229,149 +92,20 @@ public:
                      unicode);
     }
 
-    static constexpr std::size_t kPaintSampleWindow = 256;
-
-    static uint64_t PaintPercentile(
-        const std::array<uint64_t, kPaintSampleWindow>& sorted,
-        std::size_t count, std::size_t numerator, std::size_t denominator)
-    {
-        const std::size_t rank = std::max<std::size_t>(
-            1, (count * numerator + denominator - 1) / denominator);
-        return sorted[rank - 1];
-    }
-
-    void RecordPaintDuration(uint64_t elapsed_us)
-    {
-        paint_metrics_.paint_time_us += elapsed_us;
-        paint_metrics_.max_paint_time_us = std::max(
-            paint_metrics_.max_paint_time_us, elapsed_us);
-        paint_time_samples_[paint_time_sample_cursor_] = elapsed_us;
-        paint_time_sample_cursor_ =
-            (paint_time_sample_cursor_ + 1) % kPaintSampleWindow;
-        paint_time_sample_count_ = std::min(
-            paint_time_sample_count_ + 1, kPaintSampleWindow);
-
-        auto sorted = paint_time_samples_;
-        std::sort(sorted.begin(), sorted.begin() +
-                  static_cast<std::ptrdiff_t>(paint_time_sample_count_));
-        paint_metrics_.p50_paint_time_us = PaintPercentile(
-            sorted, paint_time_sample_count_, 50, 100);
-        paint_metrics_.p95_paint_time_us = PaintPercentile(
-            sorted, paint_time_sample_count_, 95, 100);
-        paint_metrics_.p99_paint_time_us = PaintPercentile(
-            sorted, paint_time_sample_count_, 99, 100);
-    }
-
-    using GlyphRunLru = std::list<GlyphRunKey>;
-    using GlyphRunCache = std::unordered_map<
-        GlyphRunKey, GlyphRunCacheEntry, GlyphRunKeyHash>;
-
-    static std::size_t BitmapBytes(const wxBitmap& bitmap)
-    {
-        if (!bitmap.IsOk())
-            return 0;
-        const std::size_t width = static_cast<std::size_t>(
-            std::max(0, bitmap.GetWidth()));
-        const std::size_t height = static_cast<std::size_t>(
-            std::max(0, bitmap.GetHeight()));
-        const std::size_t depth = static_cast<std::size_t>(
-            std::max(1, bitmap.GetDepth()));
-        return width * height * ((depth + 7) / 8);
-    }
-
-    void UpdateGlyphCacheMetrics()
-    {
-        paint_metrics_.glyph_run_cache_entries =
-            static_cast<uint64_t>(glyph_runs_.size());
-        paint_metrics_.glyph_run_cache_bytes =
-            static_cast<uint64_t>(glyph_run_cache_bytes_);
-    }
-
-    void ClearGlyphRunCache()
-    {
-        glyph_runs_.clear();
-        glyph_run_lru_.clear();
-        glyph_run_cache_bytes_ = 0;
-        UpdateGlyphCacheMetrics();
-    }
-
-    void EvictLeastRecentlyUsedGlyphRun()
-    {
-        if (glyph_run_lru_.empty())
-            return;
-        const auto lru = std::prev(glyph_run_lru_.end());
-        const auto cached = glyph_runs_.find(*lru);
-        if (cached != glyph_runs_.end()) {
-            glyph_run_cache_bytes_ -= cached->second.bytes;
-            glyph_runs_.erase(cached);
-        }
-        glyph_run_lru_.erase(lru);
-        ++paint_metrics_.glyph_run_cache_evictions;
-        UpdateGlyphCacheMetrics();
-    }
-
-    struct ColorResources {
-        wxColour color;
-        wxBrush brush;
-        wxPen pen;
-    };
-
-    const ColorResources& ColorResourcesFor(
-        const std::array<uint8_t, 3>& color)
-    {
-        const uint32_t key = ColorKey(color);
-        const auto existing = color_resources_.find(key);
-        if (existing != color_resources_.end())
-            return existing->second;
-        if (color_resources_.size() >= 4096)
-            color_resources_.clear();
-
-        const wxColour wx_color(color[0], color[1], color[2]);
-        const auto inserted = color_resources_.emplace(
-            key, ColorResources {wx_color, wxBrush(wx_color), wxPen(wx_color)});
-        return inserted.first->second;
-    }
-
     WxTerminalCtrl& owner_;
     std::thread::id owner_thread_ = std::this_thread::get_id();
     TerminalConfig config_;
     TerminalCallbacks callbacks_;
-    wxFont font_;
-    std::array<wxFont, 8> glyph_fonts_;
-    std::array<bool, 8> glyph_fonts_valid_ {};
-    std::unordered_map<std::string, wxString> glyph_texts_;
-    GlyphRunCache glyph_runs_;
-    GlyphRunLru glyph_run_lru_;
-    std::size_t glyph_run_cache_bytes_ = 0;
-    wxBitmap glyph_bitmap_scratch_;
-    std::size_t glyph_font_identity_ = 0;
-    std::unordered_map<uint32_t, ColorResources> color_resources_;
-    wxBrush background_brush_;
-    wxBitmap framebuffer_;
-    bool framebuffer_valid_ = false;
-    wxBitmap scroll_animation_source_;
-    bool scroll_animation_active_ = false;
-    int scroll_animation_distance_px_ = 0;
-    int scroll_animation_progress_px_ = 0;
-    int scroll_animation_direction_ = 0;
-    std::chrono::steady_clock::time_point scroll_animation_started_;
-    std::chrono::milliseconds scroll_animation_duration_ {0};
     SakuraTerminalFrame* pending_frame_ = nullptr;
     SakuraTerminalFrameInfo pending_info_ {};
     SakuraTerminalDirtyRegion pending_dirty_ {};
     bool pending_full_repaint_ = false;
     WxPaintMetrics paint_metrics_;
-    std::array<uint64_t, kPaintSampleWindow> paint_time_samples_ {};
-    std::size_t paint_time_sample_count_ = 0;
-    std::size_t paint_time_sample_cursor_ = 0;
+    WxRenderer renderer_;
     wxTimer output_timer_;
     std::unique_ptr<TerminalTransport> transport_;
     SakuraTerminal* core_ = nullptr;
     wxString error_;
-    int cell_width_ = 8;
-    int cell_height_ = 16;
-    unsigned int columns_ = 80;
-    unsigned int rows_ = 24;
     bool selection_dragging_ = false;
     bool pointer_down_ = false;
     bool mouse_reporting_gesture_ = false;
@@ -423,12 +157,6 @@ WxTerminalCtrl::WxTerminalCtrl(
     Bind(wxEVT_MOTION, &WxTerminalCtrl::OnMotion, this);
     Bind(wxEVT_TIMER, &WxTerminalCtrl::OnTimer, this);
 
-    impl_->font_ = CreateTerminalFont(impl_->config_);
-    impl_->glyph_font_identity_ = std::hash<std::string>{}(
-        impl_->font_.GetNativeFontInfoDesc().ToStdString()) ^
-        (std::hash<bool>{}(impl_->config_.use_system_font) << 1) ^
-        (static_cast<std::size_t>(std::max(1, impl_->config_.font_size)) << 2);
-
     if (!sakura_terminal_is_ready(impl_->core_)) {
         impl_->error_ = wxString::FromUTF8(sakura_terminal_error(impl_->core_));
         ReportError(sakura_terminal_error(impl_->core_));
@@ -441,7 +169,8 @@ WxTerminalCtrl::WxTerminalCtrl(
     impl_->last_metrics_callback_ = metrics_start;
     if (impl_->transport_ != nullptr && impl_->config_.start_transport) {
         const char* shell = std::getenv("SHELL");
-        if (!impl_->transport_->Start(impl_->columns_, impl_->rows_,
+        if (!impl_->transport_->Start(impl_->renderer_.Columns(),
+                                      impl_->renderer_.Rows(),
                                       shell == nullptr ? "" : shell)) {
             impl_->error_ = "No platform terminal transport is available";
             ReportError("No platform terminal transport is available");
@@ -459,6 +188,7 @@ WxTerminalCtrl::WxTerminalCtrl(
         NotifyTransportStatus(initial_status);
         impl_->trace_metrics_ = std::getenv("SAKURA_TRACE_METRICS") != nullptr;
         impl_->trace_scroll_ = impl_->trace_scroll_ || impl_->trace_metrics_;
+        impl_->renderer_.SetTraceScroll(impl_->trace_scroll_);
     }
     impl_->output_timer_.Start(static_cast<int>(std::max(1u,
         impl_->config_.timer_interval_ms)));
@@ -487,23 +217,19 @@ const SakuraTerminal* WxTerminalCtrl::Core() const
 std::string WxTerminalCtrl::GetFontFamily() const
 {
     impl_->AssertOwnerThread();
-    const std::string family = ToUtf8(impl_->font_.GetFaceName());
-    if (!family.empty())
-        return family;
-    return impl_->config_.use_system_font ? "system monospace"
-                                          : impl_->config_.font_family;
+    return impl_->renderer_.FontFamily();
 }
 
 int WxTerminalCtrl::GetFontSize() const
 {
     impl_->AssertOwnerThread();
-    return impl_->font_.GetPointSize();
+    return impl_->renderer_.FontSize();
 }
 
 wxSize WxTerminalCtrl::GetCellSize() const
 {
     impl_->AssertOwnerThread();
-    return {impl_->cell_width_, impl_->cell_height_};
+    return impl_->renderer_.CellSize();
 }
 
 void WxTerminalCtrl::RefreshFrame()
@@ -528,7 +254,7 @@ void WxTerminalCtrl::RequestFrameRefresh()
     }
     if (!info.changed) {
         impl_->TraceScroll("paint unchanged animation_active=%d",
-                           impl_->scroll_animation_active_ ? 1 : 0);
+                           impl_->renderer_.ScrollAnimationActive() ? 1 : 0);
         sakura_terminal_frame_free(frame);
         return;
     }
@@ -593,40 +319,21 @@ void WxTerminalCtrl::RequestFrameRefresh()
     }
 
     ++impl_->paint_metrics_.dirty_refresh_requests;
-    RefreshRect(wxRect(left * impl_->cell_width_,
-                       top * impl_->cell_height_,
-                       (right - left) * impl_->cell_width_,
-                       (bottom - top) * impl_->cell_height_), false);
+    RefreshRect(wxRect(left * impl_->renderer_.CellWidth(),
+                       top * impl_->renderer_.CellHeight(),
+                       (right - left) * impl_->renderer_.CellWidth(),
+                       (bottom - top) * impl_->renderer_.CellHeight()), false);
 }
 
 void WxTerminalCtrl::UpdateGeometry()
 {
-    wxClientDC dc(this);
-    dc.SetFont(impl_->font_);
-    const int previous_cell_width = impl_->cell_width_;
-    const int previous_cell_height = impl_->cell_height_;
-    dc.GetTextExtent("M", &impl_->cell_width_, &impl_->cell_height_);
-    impl_->cell_width_ = std::max(impl_->cell_width_, 1);
-    impl_->cell_height_ = std::max(impl_->cell_height_, 1);
-    if (previous_cell_width != impl_->cell_width_ ||
-        previous_cell_height != impl_->cell_height_) {
-        impl_->ClearGlyphRunCache();
-        impl_->glyph_fonts_valid_.fill(false);
-    }
-
-    const wxSize size = GetClientSize();
-    const unsigned int columns = static_cast<unsigned int>(
-        std::max(1, size.GetWidth() / impl_->cell_width_));
-    const unsigned int rows = static_cast<unsigned int>(
-        std::max(1, size.GetHeight() / impl_->cell_height_));
-
-    if (columns == impl_->columns_ && rows == impl_->rows_)
+    if (!impl_->renderer_.UpdateGeometry())
         return;
-    impl_->columns_ = columns;
-    impl_->rows_ = rows;
-    sakura_terminal_resize(impl_->core_, impl_->columns_, impl_->rows_);
+    sakura_terminal_resize(impl_->core_, impl_->renderer_.Columns(),
+                           impl_->renderer_.Rows());
     if (impl_->transport_ != nullptr)
-        impl_->transport_->Resize(impl_->columns_, impl_->rows_);
+        impl_->transport_->Resize(impl_->renderer_.Columns(),
+                                  impl_->renderer_.Rows());
 }
 
 uint32_t WxTerminalCtrl::KeySymFor(const wxKeyEvent& event)
@@ -656,348 +363,6 @@ uint32_t WxTerminalCtrl::KeySymFor(const wxKeyEvent& event)
     return event.GetUnicodeKey();
 }
 
-const wxFont& WxTerminalCtrl::GlyphFont(uint8_t attributes)
-{
-    const std::size_t index = attributes & 0x07;
-    if (!impl_->glyph_fonts_valid_[index]) {
-        wxFont& glyph_font = impl_->glyph_fonts_[index];
-        glyph_font = impl_->font_;
-        glyph_font.SetWeight((attributes & 0x01) != 0
-            ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
-        glyph_font.SetStyle((attributes & 0x02) != 0
-            ? wxFONTSTYLE_ITALIC : wxFONTSTYLE_NORMAL);
-        glyph_font.SetUnderlined((attributes & 0x04) != 0);
-        impl_->glyph_fonts_valid_[index] = true;
-    }
-    return impl_->glyph_fonts_[index];
-}
-
-const wxString& WxTerminalCtrl::GlyphText(const char* text, std::size_t length)
-{
-    constexpr std::size_t max_glyph_texts = 4096;
-    const std::string key(text == nullptr ? "" : std::string(text, length));
-    const auto existing = impl_->glyph_texts_.find(key);
-    if (existing != impl_->glyph_texts_.end())
-        return existing->second;
-    if (impl_->glyph_texts_.size() >= max_glyph_texts)
-        impl_->glyph_texts_.clear();
-    const auto inserted = impl_->glyph_texts_.emplace(
-        key, wxString::FromUTF8(key.c_str()));
-    return inserted.first->second;
-}
-
-const wxBitmap& WxTerminalCtrl::GlyphRunBitmap(
-    wxDC& dc, const SakuraTerminalRunView& run, const wxString& text,
-    const std::array<uint8_t, 3>& foreground,
-    const std::array<uint8_t, 3>& background)
-{
-    GlyphRunKey key;
-    key.text.assign(run.text == nullptr ? "" : run.text, run.text_length);
-    key.foreground = ColorKey(foreground);
-    key.background = ColorKey(background);
-    key.font_identity = impl_->glyph_font_identity_;
-    key.cell_count = run.cell_count;
-    key.attributes = run.attributes;
-    key.cell_width = impl_->cell_width_;
-    key.cell_height = impl_->cell_height_;
-    const wxSize ppi = dc.GetPPI();
-    key.dpi_x = ppi.GetWidth();
-    key.dpi_y = ppi.GetHeight();
-
-    const auto existing = impl_->glyph_runs_.find(key);
-    if (existing != impl_->glyph_runs_.end()) {
-        impl_->glyph_run_lru_.splice(impl_->glyph_run_lru_.begin(),
-                                     impl_->glyph_run_lru_,
-                                     existing->second.lru);
-        ++impl_->paint_metrics_.glyph_run_cache_hits;
-        return existing->second.resource.bitmap;
-    }
-
-    ++impl_->paint_metrics_.glyph_run_cache_misses;
-
-    const wxFont& font = GlyphFont(run.attributes);
-    dc.SetFont(font);
-    ++impl_->paint_metrics_.dc_state_changes;
-    const wxSize measured_size = dc.GetTextExtent(text);
-    const int run_width = static_cast<int>(run.cell_count) *
-        impl_->cell_width_;
-    const int bitmap_width = std::max(1, std::max(run_width,
-                                                  measured_size.GetWidth()));
-    const int bitmap_height = std::max(1, impl_->cell_height_);
-
-    wxBitmap bitmap(bitmap_width, bitmap_height, -1);
-    if (bitmap.IsOk()) {
-        wxMemoryDC glyph_dc(bitmap);
-        glyph_dc.SetBackground(wxBrush(wxColour(background[0], background[1],
-                                                 background[2])));
-        glyph_dc.Clear();
-        glyph_dc.SetTextForeground(wxColour(foreground[0], foreground[1],
-                                            foreground[2]));
-        glyph_dc.SetFont(font);
-        glyph_dc.DrawText(text, 0, 0);
-        glyph_dc.SelectObject(wxNullBitmap);
-    }
-
-    const std::size_t bitmap_bytes = Impl::BitmapBytes(bitmap);
-    const bool cacheable = bitmap.IsOk() &&
-        impl_->config_.glyph_cache_max_entries > 0 &&
-        bitmap_bytes <= impl_->config_.glyph_cache_max_bytes;
-    if (!cacheable) {
-        impl_->glyph_bitmap_scratch_ = bitmap;
-        return impl_->glyph_bitmap_scratch_;
-    }
-
-    while (!impl_->glyph_run_lru_.empty() &&
-           (impl_->glyph_runs_.size() >=
-                impl_->config_.glyph_cache_max_entries ||
-            impl_->glyph_run_cache_bytes_ >
-                impl_->config_.glyph_cache_max_bytes - bitmap_bytes))
-        impl_->EvictLeastRecentlyUsedGlyphRun();
-
-    auto inserted = impl_->glyph_runs_.emplace(
-        std::move(key), GlyphRunCacheEntry {});
-    inserted.first->second.resource.bitmap = bitmap;
-    inserted.first->second.resource.measured_size = measured_size;
-    inserted.first->second.bytes = bitmap_bytes;
-    impl_->glyph_run_lru_.push_front(inserted.first->first);
-    inserted.first->second.lru = impl_->glyph_run_lru_.begin();
-    impl_->glyph_run_cache_bytes_ += bitmap_bytes;
-    impl_->paint_metrics_.glyph_run_cache_peak_bytes = std::max(
-        impl_->paint_metrics_.glyph_run_cache_peak_bytes,
-        static_cast<uint64_t>(impl_->glyph_run_cache_bytes_));
-    impl_->UpdateGlyphCacheMetrics();
-    return inserted.first->second.resource.bitmap;
-}
-
-void WxTerminalCtrl::RenderFrame(wxDC& dc,
-                                 const SakuraTerminalFrame* frame,
-                                 const SakuraTerminalFrameInfo& info,
-                                 const SakuraTerminalDirtyRegion& dirty,
-                                 uint64_t* painted_cells)
-{
-    if (frame == nullptr || dirty.left >= dirty.right ||
-        dirty.top >= dirty.bottom || info.columns == 0 || info.rows == 0)
-        return;
-
-    const unsigned int left = std::min(dirty.left, info.columns);
-    const unsigned int top = std::min(dirty.top, info.rows);
-    const unsigned int right = std::min(dirty.right, info.columns);
-    const unsigned int bottom = std::min(dirty.bottom, info.rows);
-    if (left >= right || top >= bottom)
-        return;
-
-    dc.SetPen(*wxTRANSPARENT_PEN);
-    ++impl_->paint_metrics_.dc_state_changes;
-    dc.SetBrush(impl_->background_brush_);
-    ++impl_->paint_metrics_.dc_state_changes;
-    dc.DrawRectangle(left * impl_->cell_width_, top * impl_->cell_height_,
-                     (right - left) * impl_->cell_width_,
-                     (bottom - top) * impl_->cell_height_);
-    ++impl_->paint_metrics_.background_rectangles;
-
-    const uint32_t default_background = ColorKey(impl_->config_.background);
-    const bool cache_glyphs = impl_->config_.glyph_cache_enabled &&
-        (!impl_->config_.glyph_cache_bypass_scroll || info.scroll_delta == 0);
-    const unsigned int glyph_run_span_cells = std::max(
-        2u, impl_->config_.glyph_cache_max_run_cells);
-
-    for (unsigned int row = top; row < bottom; ++row) {
-        const std::size_t bounded_run_count = cache_glyphs
-            ? sakura_terminal_frame_row_span_count(
-                  frame, row, glyph_run_span_cells) : 0;
-        const bool use_bounded_spans = cache_glyphs && bounded_run_count > 0;
-        const std::size_t run_count = use_bounded_spans
-            ? bounded_run_count
-            : sakura_terminal_frame_row_run_count(frame, row);
-        std::vector<SakuraTerminalRunView> row_runs;
-        row_runs.reserve(run_count);
-        for (std::size_t index = 0; index < run_count; ++index) {
-            SakuraTerminalRunView run {};
-            const int valid = use_bounded_spans
-                ? sakura_terminal_frame_row_span(
-                      frame, row, index, glyph_run_span_cells, &run)
-                : sakura_terminal_frame_row_run(frame, row, index, &run);
-            if (valid)
-                row_runs.push_back(run);
-        }
-        if (use_bounded_spans && row_runs.empty()) {
-            const std::size_t logical_run_count =
-                sakura_terminal_frame_row_run_count(frame, row);
-            row_runs.reserve(logical_run_count);
-            for (std::size_t index = 0; index < logical_run_count; ++index) {
-                SakuraTerminalRunView run {};
-                if (sakura_terminal_frame_row_run(
-                        frame, row, index, &run))
-                    row_runs.push_back(run);
-            }
-        }
-
-        bool pending_background = false;
-        uint32_t pending_background_key = 0;
-        std::array<uint8_t, 3> pending_background_color {};
-        unsigned int pending_background_left = 0;
-        unsigned int pending_background_right = 0;
-        const auto flush_background = [&]() {
-            if (!pending_background)
-                return;
-            dc.SetBrush(impl_->ColorResourcesFor(
-                pending_background_color).brush);
-            ++impl_->paint_metrics_.dc_state_changes;
-            dc.DrawRectangle(
-                pending_background_left * impl_->cell_width_,
-                row * impl_->cell_height_,
-                (pending_background_right - pending_background_left) *
-                    impl_->cell_width_,
-                impl_->cell_height_);
-            ++impl_->paint_metrics_.background_rectangles;
-            pending_background = false;
-        };
-
-        for (const SakuraTerminalRunView& run : row_runs) {
-
-            const unsigned int run_right = std::min(
-                info.columns, run.left + std::max(1u, run.cell_count));
-            const unsigned int draw_left = std::max(left, run.left);
-            const unsigned int draw_right = std::min(right, run_right);
-            if (draw_left >= draw_right)
-                continue;
-
-            const std::array<uint8_t, 3> background {
-                run.background[0], run.background[1], run.background[2]};
-            const uint32_t background_key = ColorKey(background);
-            if (background_key == default_background) {
-                flush_background();
-                continue;
-            }
-            if (!pending_background ||
-                pending_background_key != background_key ||
-                pending_background_right != draw_left) {
-                flush_background();
-                pending_background = true;
-                pending_background_key = background_key;
-                pending_background_color = background;
-                pending_background_left = draw_left;
-                pending_background_right = draw_right;
-            } else {
-                pending_background_right = draw_right;
-            }
-        }
-        flush_background();
-
-        for (const SakuraTerminalRunView& run : row_runs) {
-            const unsigned int run_right = std::min(
-                info.columns, run.left + std::max(1u, run.cell_count));
-            const unsigned int draw_left = std::max(left, run.left);
-            const unsigned int draw_right = std::min(right, run_right);
-            if (draw_left >= draw_right)
-                continue;
-            if (painted_cells != nullptr)
-                *painted_cells += draw_right - draw_left;
-
-            const std::array<uint8_t, 3> foreground {
-                run.foreground[0], run.foreground[1], run.foreground[2]};
-            const std::array<uint8_t, 3> background {
-                run.background[0], run.background[1], run.background[2]};
-
-            const auto draw_glyph_run = [&](const SakuraTerminalRunView& glyph_run,
-                                            const wxString& glyph) {
-                if (cache_glyphs) {
-                    const wxBitmap& glyph_bitmap = GlyphRunBitmap(
-                        dc, glyph_run, glyph, foreground, background);
-                    if (glyph_bitmap.IsOk()) {
-                        dc.DrawBitmap(glyph_bitmap,
-                                      glyph_run.left * impl_->cell_width_,
-                                      row * impl_->cell_height_, false);
-                        ++impl_->paint_metrics_.glyph_bitmap_draws;
-                    } else {
-                        dc.SetTextForeground(
-                            impl_->ColorResourcesFor(foreground).color);
-                        ++impl_->paint_metrics_.dc_state_changes;
-                        dc.SetFont(GlyphFont(glyph_run.attributes));
-                        ++impl_->paint_metrics_.dc_state_changes;
-                        dc.DrawText(glyph,
-                                    glyph_run.left * impl_->cell_width_,
-                                    row * impl_->cell_height_);
-                        ++impl_->paint_metrics_.glyph_text_draws;
-                    }
-                } else {
-                    if (impl_->config_.glyph_cache_enabled &&
-                        impl_->config_.glyph_cache_bypass_scroll &&
-                        info.scroll_delta != 0)
-                        ++impl_->paint_metrics_.glyph_run_cache_bypasses;
-                    dc.SetTextForeground(
-                        impl_->ColorResourcesFor(foreground).color);
-                    ++impl_->paint_metrics_.dc_state_changes;
-                    dc.SetFont(GlyphFont(glyph_run.attributes));
-                    ++impl_->paint_metrics_.dc_state_changes;
-                    dc.DrawText(glyph,
-                                glyph_run.left * impl_->cell_width_,
-                                row * impl_->cell_height_);
-                    ++impl_->paint_metrics_.glyph_text_draws;
-                }
-            };
-
-            const auto draw_text_run = [&](const SakuraTerminalRunView& text_run) {
-                if (text_run.text == nullptr || text_run.text_length == 0)
-                    return;
-                bool has_glyph = false;
-                for (std::size_t text_index = 0;
-                     text_index < text_run.text_length; ++text_index) {
-                    if (text_run.text[text_index] != ' ') {
-                        has_glyph = true;
-                        break;
-                    }
-                }
-                if (!has_glyph || text_run.text_length == 0)
-                    return;
-                const wxString& glyph = GlyphText(
-                    text_run.text, text_run.text_length);
-                if (!glyph.empty()) {
-                    ++impl_->paint_metrics_.glyph_run_spans;
-                    draw_glyph_run(text_run, glyph);
-                }
-            };
-            draw_text_run(run);
-            if ((run.attributes & 0x04) != 0) {
-                dc.SetPen(impl_->ColorResourcesFor(foreground).pen);
-                ++impl_->paint_metrics_.dc_state_changes;
-                const int underline_y = (row + 1) * impl_->cell_height_ - 2;
-                dc.DrawLine(draw_left * impl_->cell_width_, underline_y,
-                            draw_right * impl_->cell_width_ - 1, underline_y);
-                dc.SetPen(*wxTRANSPARENT_PEN);
-                ++impl_->paint_metrics_.dc_state_changes;
-            }
-        }
-    }
-
-    const bool cursor_in_dirty_region =
-        info.cursor_x >= left && info.cursor_x < right &&
-        info.cursor_y >= top && info.cursor_y < bottom;
-    if (cursor_in_dirty_region && info.cursor_visible &&
-        info.cursor_x < info.columns && info.cursor_y < info.rows) {
-        dc.SetBrush(*wxTRANSPARENT_BRUSH);
-        ++impl_->paint_metrics_.dc_state_changes;
-        dc.SetPen(wxPen(wxColour(230, 230, 230), 1));
-        ++impl_->paint_metrics_.dc_state_changes;
-        const int cursor_x = info.cursor_x * impl_->cell_width_;
-        const int cursor_y = info.cursor_y * impl_->cell_height_;
-        switch (info.cursor_style) {
-        case SAKURA_TERMINAL_CURSOR_UNDERLINE:
-            dc.DrawLine(cursor_x, cursor_y + impl_->cell_height_ - 2,
-                        cursor_x + impl_->cell_width_ - 1,
-                        cursor_y + impl_->cell_height_ - 2);
-            break;
-        case SAKURA_TERMINAL_CURSOR_BAR:
-            dc.DrawLine(cursor_x + 1, cursor_y + 1,
-                        cursor_x + 1, cursor_y + impl_->cell_height_ - 2);
-            break;
-        case SAKURA_TERMINAL_CURSOR_BLOCK:
-            dc.DrawRectangle(cursor_x, cursor_y, impl_->cell_width_, impl_->cell_height_);
-            break;
-        }
-    }
-}
-
 void WxTerminalCtrl::OnPaint(wxPaintEvent&)
 {
     const auto paint_start = std::chrono::steady_clock::now();
@@ -1007,7 +372,7 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
             std::chrono::steady_clock::now() - paint_start).count();
         const uint64_t elapsed_us = static_cast<uint64_t>(
             std::max<int64_t>(0, elapsed));
-        impl_->RecordPaintDuration(elapsed_us);
+        impl_->renderer_.RecordPaintDuration(elapsed_us);
     };
     wxAutoBufferedPaintDC dc(this);
     const auto& background = impl_->config_.background;
@@ -1041,8 +406,7 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         frame = sakura_terminal_take_frame(impl_->core_);
         if (frame == nullptr || !sakura_terminal_frame_info(frame, &info)) {
             sakura_terminal_frame_free(frame);
-            if (impl_->scroll_animation_active_)
-                DrawScrollAnimation(dc);
+            impl_->renderer_.Draw(dc);
             record_paint();
             return;
         }
@@ -1050,78 +414,26 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         full_repaint = info.full_repaint != 0;
     }
     if (frame == nullptr) {
-        if (impl_->scroll_animation_active_)
-            DrawScrollAnimation(dc);
+        impl_->renderer_.Draw(dc);
         record_paint();
         return;
     }
     if (!info.changed) {
         sakura_terminal_frame_free(frame);
-        if (impl_->scroll_animation_active_)
-            DrawScrollAnimation(dc);
-        else if (impl_->framebuffer_valid_)
-            dc.DrawBitmap(impl_->framebuffer_, 0, 0, false);
+        impl_->renderer_.Draw(dc);
         record_paint();
         return;
     }
-    const wxSize client_size = GetClientSize();
-    const int bitmap_width = std::max(1, client_size.GetWidth());
-    const int bitmap_height = std::max(1, client_size.GetHeight());
-    if (!impl_->framebuffer_.IsOk() ||
-        impl_->framebuffer_.GetWidth() != bitmap_width ||
-        impl_->framebuffer_.GetHeight() != bitmap_height) {
-        CancelScrollAnimation(true, "paint-resize");
-        impl_->framebuffer_ = wxBitmap(bitmap_width, bitmap_height, -1);
-        impl_->framebuffer_valid_ = false;
-        ++impl_->paint_metrics_.framebuffer_rebuilds;
-    }
-
-    impl_->TraceScroll(
-        "frame changed=%d generation=%llu delta=%d kind=%d full=%d framebuffer=%d "
-        "dirty=%u,%u-%u,%u",
-        info.changed, static_cast<unsigned long long>(info.generation),
-        info.scroll_delta, static_cast<int>(info.scroll_kind),
-        full_repaint ? 1 : 0, impl_->framebuffer_valid_ ? 1 : 0,
-        info.dirty.left, info.dirty.top, info.dirty.right, info.dirty.bottom);
-    if (info.scroll_kind == SAKURA_TERMINAL_SCROLL_VIEWPORT &&
-        info.scroll_delta != 0)
-        BeginScrollAnimation(info);
-    else
-        CancelScrollAnimation(true, "paint-other-frame");
-
-    wxMemoryDC framebuffer_dc;
-    framebuffer_dc.SelectObject(impl_->framebuffer_);
     uint64_t painted_cells = 0;
-    if (!impl_->framebuffer_valid_ || full_repaint) {
-        ++impl_->paint_metrics_.full_repaints;
-        framebuffer_dc.SetBackground(wxBrush(wxColour(background[0],
-                                                       background[1],
-                                                       background[2])));
-        framebuffer_dc.Clear();
-        const SakuraTerminalDirtyRegion full_region {
-            0, 0, info.columns, info.rows
-        };
-        RenderFrame(framebuffer_dc, frame, info, full_region, &painted_cells);
-        impl_->framebuffer_valid_ = true;
-    } else if (info.changed) {
-        if (info.scroll_delta != 0)
-            ScrollFramebuffer(framebuffer_dc, info.scroll_delta, info.columns,
-                              info.rows, impl_->cell_width_,
-                              impl_->cell_height_);
-        ++impl_->paint_metrics_.partial_repaints;
-        RenderFrame(framebuffer_dc, frame, info, dirty, &painted_cells);
-    }
-    framebuffer_dc.SelectObject(wxNullBitmap);
-    impl_->paint_metrics_.painted_cells += painted_cells;
-
-    DrawScrollAnimation(dc);
+    impl_->renderer_.PaintFrame(dc, frame, info, dirty, full_repaint,
+                                &painted_cells);
     sakura_terminal_frame_free(frame);
     record_paint();
 }
 
 void WxTerminalCtrl::OnSize(wxSizeEvent& event)
 {
-    CancelScrollAnimation(true, "size");
+    impl_->renderer_.CancelScrollAnimation(true, "size");
     UpdateGeometry();
     ++impl_->paint_metrics_.refresh_requests;
     ++impl_->paint_metrics_.full_refresh_requests;
@@ -1131,7 +443,7 @@ void WxTerminalCtrl::OnSize(wxSizeEvent& event)
 
 void WxTerminalCtrl::OnChar(wxKeyEvent& event)
 {
-    CancelScrollAnimation(true, "key");
+    impl_->renderer_.CancelScrollAnimation(true, "key");
     const uint32_t key = static_cast<uint32_t>(event.GetKeyCode());
     const uint32_t unicode = event.GetUnicodeKey();
     const bool copy_key = key == 'c' || key == 'C' || unicode == 'c' ||
@@ -1207,7 +519,7 @@ void WxTerminalCtrl::OnMouseWheel(wxMouseEvent& event)
         sakura_terminal_mouse_reporting_enabled(impl_->core_)) {
         impl_->TraceScroll("wheel route=application rotation=%d",
                            event.GetWheelRotation());
-        CancelScrollAnimation(true, "mouse-reporting");
+        impl_->renderer_.CancelScrollAnimation(true, "mouse-reporting");
         const unsigned int button = event.GetWheelRotation() > 0
             ? SAKURA_TERMINAL_MOUSE_WHEEL_UP
             : SAKURA_TERMINAL_MOUSE_WHEEL_DOWN;
@@ -1250,8 +562,8 @@ void WxTerminalCtrl::QueueWheelScroll(const wxMouseEvent& event)
     impl_->wheel_rotation_ -= actions * kWheelDelta;
 
     const int lines_per_action = event.IsPageScroll()
-        ? std::max(1, impl_->rows_ > 1
-            ? static_cast<int>(impl_->rows_ - 1) : 1)
+        ? std::max(1, impl_->renderer_.Rows() > 1
+            ? static_cast<int>(impl_->renderer_.Rows() - 1) : 1)
         : std::max(1, event.GetLinesPerAction());
     constexpr int kMaxPendingWheelLines = 64;
     impl_->pending_wheel_lines_ = std::clamp(
@@ -1264,13 +576,13 @@ bool WxTerminalCtrl::FlushWheelScroll()
     impl_->AssertOwnerThread();
     if (impl_->pending_wheel_lines_ == 0 ||
         (impl_->config_.smooth_scrolling &&
-         impl_->scroll_animation_active_))
+         impl_->renderer_.ScrollAnimationActive()))
         return false;
 
     int max_lines = 1;
     if (impl_->config_.smooth_scrolling)
-        max_lines = std::max(1, impl_->rows_ > 1
-            ? static_cast<int>(impl_->rows_ - 1) : 1);
+        max_lines = std::max(1, impl_->renderer_.Rows() > 1
+            ? static_cast<int>(impl_->renderer_.Rows() - 1) : 1);
     const int pending_magnitude = std::abs(impl_->pending_wheel_lines_);
     const int magnitude = std::min(pending_magnitude, max_lines);
     const int lines = impl_->pending_wheel_lines_ > 0
@@ -1285,157 +597,18 @@ bool WxTerminalCtrl::FlushWheelScroll()
     return true;
 }
 
-void WxTerminalCtrl::BeginScrollAnimation(
-    const SakuraTerminalFrameInfo& info)
-{
-    impl_->AssertOwnerThread();
-    if (!impl_->config_.smooth_scrolling || !impl_->framebuffer_valid_ ||
-        info.scroll_delta == 0 ||
-        info.scroll_kind != SAKURA_TERMINAL_SCROLL_VIEWPORT) {
-        impl_->TraceScroll(
-            "animation reject enabled=%d framebuffer=%d delta=%d kind=%d",
-            impl_->config_.smooth_scrolling ? 1 : 0,
-            impl_->framebuffer_valid_ ? 1 : 0, info.scroll_delta,
-            static_cast<int>(info.scroll_kind));
-        return;
-    }
-
-    if (impl_->scroll_animation_active_)
-        CancelScrollAnimation(true, "animation-restart");
-    impl_->scroll_animation_source_ = CloneBitmap(impl_->framebuffer_);
-    if (!impl_->scroll_animation_source_.IsOk())
-        return;
-
-    const unsigned int lines = static_cast<unsigned int>(
-        std::abs(info.scroll_delta));
-    impl_->scroll_animation_distance_px_ = lines * impl_->cell_height_;
-    if (impl_->scroll_animation_distance_px_ <= 0)
-        return;
-
-    const uint64_t requested_ms = static_cast<uint64_t>(std::max(
-        1u, impl_->config_.scroll_animation_ms_per_line)) * lines;
-    const uint64_t max_ms = impl_->config_.scroll_animation_max_ms == 0
-        ? requested_ms : impl_->config_.scroll_animation_max_ms;
-    impl_->scroll_animation_duration_ = std::chrono::milliseconds(
-        static_cast<int64_t>(std::max<uint64_t>(1,
-            std::min(requested_ms, max_ms))));
-    impl_->scroll_animation_progress_px_ = 0;
-    impl_->scroll_animation_direction_ = info.scroll_delta > 0 ? 1 : -1;
-    impl_->scroll_animation_started_ = std::chrono::steady_clock::now();
-    impl_->scroll_animation_active_ = true;
-    ++impl_->paint_metrics_.scroll_animation_starts;
-    impl_->TraceScroll(
-        "animation start delta=%d full=%d distance_px=%d duration_ms=%lld",
-        info.scroll_delta, info.full_repaint ? 1 : 0,
-        impl_->scroll_animation_distance_px_,
-        static_cast<long long>(impl_->scroll_animation_duration_.count()));
-}
-
-void WxTerminalCtrl::CancelScrollAnimation(bool forced, const char* reason)
-{
-    impl_->AssertOwnerThread();
-    if (!impl_->scroll_animation_active_)
-        return;
-    impl_->TraceScroll("animation cancel forced=%d reason=%s", forced ? 1 : 0,
-                       reason == nullptr ? "unknown" : reason);
-    impl_->scroll_animation_active_ = false;
-    impl_->scroll_animation_source_ = wxNullBitmap;
-    impl_->scroll_animation_progress_px_ =
-        impl_->scroll_animation_distance_px_;
-    impl_->scroll_animation_direction_ = 0;
-    if (forced)
-        ++impl_->paint_metrics_.scroll_animation_settles;
-}
-
-bool WxTerminalCtrl::AdvanceScrollAnimation()
-{
-    impl_->AssertOwnerThread();
-    if (!impl_->scroll_animation_active_)
-        return false;
-
-    const auto elapsed = std::chrono::steady_clock::now() -
-        impl_->scroll_animation_started_;
-    const double duration = std::max<double>(
-        1.0, impl_->scroll_animation_duration_.count());
-    const double normalized = std::min<double>(1.0,
-        std::chrono::duration<double, std::milli>(elapsed).count() /
-            duration);
-    // Wheel scrolling should advance at a constant pixel rate. An aggressive
-    // ease-out makes the first timer tick jump a large fraction of a cell,
-    // which feels like another line-based scroll even though later frames are
-    // animated.
-    const double eased = normalized;
-    const int next_progress = static_cast<int>(std::lround(
-        eased * impl_->scroll_animation_distance_px_));
-    const bool changed = next_progress !=
-        impl_->scroll_animation_progress_px_;
-    if (changed) {
-        impl_->scroll_animation_progress_px_ = next_progress;
-        ++impl_->paint_metrics_.scroll_animation_frames;
-    }
-    impl_->TraceScroll(
-        "animation advance elapsed_us=%lld progress_px=%d/%d changed=%d active=%d",
-        static_cast<long long>(
-            std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()),
-        next_progress, impl_->scroll_animation_distance_px_, changed ? 1 : 0,
-        normalized < 1.0 ? 1 : 0);
-    if (normalized >= 1.0) {
-        impl_->scroll_animation_active_ = false;
-        impl_->scroll_animation_source_ = wxNullBitmap;
-        impl_->scroll_animation_direction_ = 0;
-        ++impl_->paint_metrics_.scroll_animation_completions;
-        return true;
-    }
-    return changed;
-}
-
-void WxTerminalCtrl::DrawScrollAnimation(wxDC& dc)
-{
-    impl_->AssertOwnerThread();
-    if (!impl_->scroll_animation_active_ ||
-        !impl_->scroll_animation_source_.IsOk()) {
-        dc.DrawBitmap(impl_->framebuffer_, 0, 0, false);
-        return;
-    }
-
-    ++impl_->paint_metrics_.scroll_animation_paints;
-    impl_->TraceScroll("animation paint progress_px=%d/%d direction=%d",
-                       impl_->scroll_animation_progress_px_,
-                       impl_->scroll_animation_distance_px_,
-                       impl_->scroll_animation_direction_);
-    const int width = impl_->framebuffer_.GetWidth();
-    const int height = impl_->framebuffer_.GetHeight();
-    const int progress = std::clamp(
-        impl_->scroll_animation_progress_px_, 0,
-        impl_->scroll_animation_distance_px_);
-    const int distance = impl_->scroll_animation_distance_px_;
-    dc.Clear();
-    if (impl_->scroll_animation_direction_ > 0) {
-        dc.DrawBitmap(impl_->scroll_animation_source_, 0, -progress, false);
-        if (progress > 0) {
-            dc.SetClippingRegion(0, height - progress, width, progress);
-            dc.DrawBitmap(impl_->framebuffer_, 0, distance - progress, false);
-            dc.DestroyClippingRegion();
-        }
-    } else {
-        dc.DrawBitmap(impl_->scroll_animation_source_, 0, progress, false);
-        if (progress > 0) {
-            dc.SetClippingRegion(0, 0, width, progress);
-            dc.DrawBitmap(impl_->framebuffer_, 0, -distance + progress,
-                          false);
-            dc.DestroyClippingRegion();
-        }
-    }
-}
-
 std::pair<unsigned int, unsigned int>
 WxTerminalCtrl::CellAt(const wxPoint& point) const
 {
-    const int column = std::max(0, point.x) / std::max(1, impl_->cell_width_);
-    const int row = std::max(0, point.y) / std::max(1, impl_->cell_height_);
+    const int column = std::max(0, point.x) /
+        std::max(1, impl_->renderer_.CellWidth());
+    const int row = std::max(0, point.y) /
+        std::max(1, impl_->renderer_.CellHeight());
     return {
-        std::min(static_cast<unsigned int>(column), impl_->columns_ - 1),
-        std::min(static_cast<unsigned int>(row), impl_->rows_ - 1),
+        std::min(static_cast<unsigned int>(column),
+                 impl_->renderer_.Columns() - 1),
+        std::min(static_cast<unsigned int>(row),
+                 impl_->renderer_.Rows() - 1),
     };
 }
 
@@ -1488,7 +661,7 @@ void WxTerminalCtrl::EndMouseReporting(const wxMouseEvent& event)
 
 void WxTerminalCtrl::OnLeftDown(wxMouseEvent& event)
 {
-    CancelScrollAnimation(true, "mouse-down");
+    impl_->renderer_.CancelScrollAnimation(true, "mouse-down");
     SetFocus();
     const auto [column, row] = CellAt(event.GetPosition());
     if (ForwardMouse(event, SAKURA_TERMINAL_MOUSE_LEFT,
@@ -1569,7 +742,7 @@ void WxTerminalCtrl::OnMouseButtonUp(wxMouseEvent& event)
 
 void WxTerminalCtrl::UpdateSelectionAt(const wxPoint& position)
 {
-    CancelScrollAnimation(true, "selection");
+    impl_->renderer_.CancelScrollAnimation(true, "selection");
     impl_->auto_scroll_direction_ = 0;
     if (position.y < 0)
         impl_->auto_scroll_direction_ = -1;
@@ -1726,7 +899,9 @@ void WxTerminalCtrl::RestartTransport()
     impl_->transport_->Stop();
     sakura_terminal_clear_selection(impl_->core_);
     const char* shell = std::getenv("SHELL");
-    impl_->transport_->Start(impl_->columns_, impl_->rows_, shell == nullptr ? "" : shell);
+    impl_->transport_->Start(impl_->renderer_.Columns(),
+                             impl_->renderer_.Rows(),
+                             shell == nullptr ? "" : shell);
     const char* clear = "\x1b[2J\x1b[H";
     sakura_terminal_feed_output(impl_->core_, clear, std::strlen(clear));
     const TransportStatus status = impl_->transport_->GetStatus();
@@ -1760,13 +935,13 @@ void WxTerminalCtrl::UpdateTransportStatus()
 void WxTerminalCtrl::OnTimer(wxTimerEvent&)
 {
     impl_->AssertOwnerThread();
-    const bool animation_changed = AdvanceScrollAnimation();
-    if (!impl_->scroll_animation_active_ && FlushWheelScroll())
+    const bool animation_changed = impl_->renderer_.AdvanceScrollAnimation();
+    if (!impl_->renderer_.ScrollAnimationActive() && FlushWheelScroll())
         RequestFrameRefresh();
     else if (animation_changed)
         Refresh(false);
     if (impl_->selection_dragging_ && impl_->auto_scroll_direction_ != 0) {
-        CancelScrollAnimation(true, "selection-autoscroll");
+        impl_->renderer_.CancelScrollAnimation(true, "selection-autoscroll");
         sakura_terminal_scroll_lines(impl_->core_,
                                      impl_->auto_scroll_direction_ < 0 ? 1 : -1);
         const auto [column, row] = CellAt(impl_->last_pointer_position_);
@@ -1780,7 +955,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
     for (const auto& chunk : output)
         sakura_terminal_feed_output(impl_->core_, chunk.data(), chunk.size());
     if (!output.empty()) {
-        CancelScrollAnimation(true, "output");
+        impl_->renderer_.CancelScrollAnimation(true, "output");
         RequestFrameRefresh();
     }
     NotifyTitleChanged();

@@ -35,26 +35,12 @@ private:
     void RequestFrameRefresh();
     void UpdateGeometry();
     static uint32_t KeySymFor(const wxKeyEvent& event);
-    const wxFont& GlyphFont(uint8_t attributes);
-    const wxString& GlyphText(const char* text, std::size_t length);
-    const wxBitmap& GlyphRunBitmap(
-        wxDC& dc, const SakuraTerminalRunView& run, const wxString& text,
-        const std::array<uint8_t, 3>& foreground,
-        const std::array<uint8_t, 3>& background);
-    void RenderFrame(wxDC& dc, const SakuraTerminalFrame* frame,
-                     const SakuraTerminalFrameInfo& info,
-                     const SakuraTerminalDirtyRegion& dirty,
-                        uint64_t* painted_cells);
     void OnPaint(wxPaintEvent& event);
     void OnSize(wxSizeEvent& event);
     void OnChar(wxKeyEvent& event);
     void OnMouseWheel(wxMouseEvent& event);
     void QueueWheelScroll(const wxMouseEvent& event);
     bool FlushWheelScroll();
-    void BeginScrollAnimation(const SakuraTerminalFrameInfo& info);
-    void CancelScrollAnimation(bool forced, const char* reason = nullptr);
-    bool AdvanceScrollAnimation();
-    void DrawScrollAnimation(wxDC& dc);
     std::pair<unsigned int, unsigned int> CellAt(const wxPoint& point) const;
     static unsigned char MouseModifiers(const wxMouseEvent& event);
     bool ForwardMouse(const wxMouseEvent& event, unsigned int button,

@@ -25,6 +25,12 @@ and `SakuraTerminalFrame` are opaque, caller-owned handles. A frame owns an
 immutable view of the rendered screen; cell text is borrowed from that frame
 and must not be retained after `sakura_terminal_frame_free()`.
 
+Terminal colors are configured through `SakuraTerminalTheme` at core creation.
+The core resolves the theme into the active parser backend's palette, so
+frontends do not need to recognize backend-specific default RGB values. The
+legacy `sakura_terminal_new()` constructor continues to use the library's
+default base16-dark theme.
+
 `SakuraTerminalFrameInfo` exposes the complete frame metadata, including a
 signed scroll delta for full-screen content movement. A frontend may blit its
 framebuffer by that delta and repaint the newly exposed dirty spans. The frame
@@ -82,6 +88,13 @@ kill-on-close Job Object when the platform permits it.
 `WxTerminalCtrl` owns the `std::unique_ptr<TerminalTransport>` passed to its
 constructor. It stops the transport before releasing it. Applications must not
 use that transport pointer after handing ownership to the control.
+
+The wx frontend separates session orchestration from rendering. `WxTerminalCtrl`
+owns the core, transport, input state, timers, and callbacks; its private
+`WxRenderer` owns font/geometry resolution, framebuffer painting, glyph-run
+caching, paint metrics, and pixel scroll animation. The renderer consumes only
+Sakura frame snapshots and wx drawing contexts, so another frontend can reuse
+the session/core boundary without inheriting wx rendering policy.
 
 ## `WxTerminalCtrl` and callbacks
 
