@@ -32,10 +32,10 @@ cross-platform terminal library and a Sakura frontend foundation.
   - Reuse packed row objects and expose scroll-delta hints for full-screen
     output scrolling.
 
-- [ ] Add glyph caching.
+- [x] Add glyph caching.
   - [x] Cache UTF-8 conversion and font variants in the wx renderer.
-  - Cache measured and rendered glyph runs by font, attributes, and text.
-  - Include wide glyphs, combining marks, and fallback fonts in cache tests.
+  - Cache measured and rendered glyph runs by font, attributes, colors, and text.
+  - Cover repeated ASCII, wide, and combining runs in wx smoke and benchmark tests.
 
 - [x] Add a terminal-core frame timing benchmark.
   - Report feed, packed-frame, and row-run access timings.

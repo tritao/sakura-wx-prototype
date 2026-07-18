@@ -46,6 +46,25 @@ bool RunScenario(WxTerminalCtrl& terminal)
             initial_paint.painted_cells)
         return fail("incremental paint metrics");
 
+    const char* repeated_glyphs = "\x1b[3;1H界é";
+    const WxPaintMetrics glyph_before = terminal.GetPaintMetrics();
+    sakura_terminal_feed_output(core, repeated_glyphs,
+                                std::strlen(repeated_glyphs));
+    terminal.RefreshFrame();
+    wxYield();
+    terminal.Update();
+    const WxPaintMetrics glyph_first = terminal.GetPaintMetrics();
+    sakura_terminal_feed_output(core, repeated_glyphs,
+                                std::strlen(repeated_glyphs));
+    terminal.RefreshFrame();
+    wxYield();
+    terminal.Update();
+    const WxPaintMetrics glyph_second = terminal.GetPaintMetrics();
+    if (glyph_first.glyph_run_cache_misses <=
+            glyph_before.glyph_run_cache_misses ||
+        glyph_second.glyph_run_cache_hits <= glyph_first.glyph_run_cache_hits)
+        return fail("glyph run cache metrics");
+
     sakura_terminal_start_selection(core, 0, 0);
     sakura_terminal_update_selection(core, 7, 0);
     terminal.RefreshFrame();

@@ -32,6 +32,10 @@ private:
     static uint32_t KeySymFor(const wxKeyEvent& event);
     const wxFont& GlyphFont(uint8_t attributes);
     const wxString& GlyphText(const char* text, std::size_t length);
+    const wxBitmap& GlyphRunBitmap(
+        wxDC& dc, const SakuraTerminalRunView& run, const wxString& text,
+        const std::array<uint8_t, 3>& foreground,
+        const std::array<uint8_t, 3>& background);
     void RenderFrame(wxDC& dc, const SakuraTerminalFrame* frame,
                      const SakuraTerminalFrameInfo& info,
                      const SakuraTerminalDirtyRegion& dirty,

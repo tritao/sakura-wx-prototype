@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -52,6 +53,55 @@ void ScrollFramebuffer(wxMemoryDC& dc, int delta, unsigned int columns,
                 &dc, 0, 0);
     }
 }
+
+struct GlyphRunKey {
+    std::string text;
+    uint32_t foreground = 0;
+    uint32_t background = 0;
+    std::size_t font_identity = 0;
+    unsigned int cell_count = 0;
+    uint8_t attributes = 0;
+    int cell_width = 0;
+    int cell_height = 0;
+    int dpi_x = 0;
+    int dpi_y = 0;
+
+    bool operator==(const GlyphRunKey& other) const
+    {
+        return text == other.text && foreground == other.foreground &&
+            background == other.background &&
+            font_identity == other.font_identity &&
+            cell_count == other.cell_count && attributes == other.attributes &&
+            cell_width == other.cell_width && cell_height == other.cell_height &&
+            dpi_x == other.dpi_x && dpi_y == other.dpi_y;
+    }
+};
+
+struct GlyphRunKeyHash {
+    std::size_t operator()(const GlyphRunKey& key) const
+    {
+        std::size_t hash = std::hash<std::string>{}(key.text);
+        const auto mix = [&hash](std::size_t value) {
+            hash ^= value + static_cast<std::size_t>(0x9e3779b9) +
+                (hash << 6) + (hash >> 2);
+        };
+        mix(key.foreground);
+        mix(key.background);
+        mix(key.font_identity);
+        mix(key.cell_count);
+        mix(key.attributes);
+        mix(static_cast<std::size_t>(key.cell_width));
+        mix(static_cast<std::size_t>(key.cell_height));
+        mix(static_cast<std::size_t>(key.dpi_x));
+        mix(static_cast<std::size_t>(key.dpi_y));
+        return hash;
+    }
+};
+
+struct GlyphRunResource {
+    wxBitmap bitmap;
+    wxSize measured_size;
+};
 
 } // namespace
 
@@ -120,6 +170,9 @@ public:
     std::array<wxFont, 8> glyph_fonts_;
     std::array<bool, 8> glyph_fonts_valid_ {};
     std::unordered_map<std::string, wxString> glyph_texts_;
+    std::unordered_map<GlyphRunKey, GlyphRunResource, GlyphRunKeyHash>
+        glyph_runs_;
+    std::size_t glyph_font_identity_ = 0;
     std::unordered_map<uint32_t, ColorResources> color_resources_;
     wxBrush background_brush_;
     wxBitmap framebuffer_;
@@ -186,6 +239,9 @@ WxTerminalCtrl::WxTerminalCtrl(
                           wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
                           wxFONTWEIGHT_NORMAL, false,
                           wxString::FromUTF8(impl_->config_.font_family.c_str()));
+    impl_->glyph_font_identity_ = std::hash<std::string>{}(
+        impl_->config_.font_family) ^
+        (static_cast<std::size_t>(std::max(1, impl_->config_.font_size)) << 1);
 
     if (!sakura_terminal_is_ready(impl_->core_)) {
         impl_->error_ = wxString::FromUTF8(sakura_terminal_error(impl_->core_));
@@ -327,9 +383,16 @@ void WxTerminalCtrl::UpdateGeometry()
 {
     wxClientDC dc(this);
     dc.SetFont(impl_->font_);
+    const int previous_cell_width = impl_->cell_width_;
+    const int previous_cell_height = impl_->cell_height_;
     dc.GetTextExtent("M", &impl_->cell_width_, &impl_->cell_height_);
     impl_->cell_width_ = std::max(impl_->cell_width_, 1);
     impl_->cell_height_ = std::max(impl_->cell_height_, 1);
+    if (previous_cell_width != impl_->cell_width_ ||
+        previous_cell_height != impl_->cell_height_) {
+        impl_->glyph_runs_.clear();
+        impl_->glyph_fonts_valid_.fill(false);
+    }
 
     const wxSize size = GetClientSize();
     const unsigned int columns = static_cast<unsigned int>(
@@ -403,6 +466,64 @@ const wxString& WxTerminalCtrl::GlyphText(const char* text, std::size_t length)
     return inserted.first->second;
 }
 
+const wxBitmap& WxTerminalCtrl::GlyphRunBitmap(
+    wxDC& dc, const SakuraTerminalRunView& run, const wxString& text,
+    const std::array<uint8_t, 3>& foreground,
+    const std::array<uint8_t, 3>& background)
+{
+    GlyphRunKey key;
+    key.text.assign(run.text == nullptr ? "" : run.text, run.text_length);
+    key.foreground = ColorKey(foreground);
+    key.background = ColorKey(background);
+    key.font_identity = impl_->glyph_font_identity_;
+    key.cell_count = run.cell_count;
+    key.attributes = run.attributes;
+    key.cell_width = impl_->cell_width_;
+    key.cell_height = impl_->cell_height_;
+    const wxSize ppi = dc.GetPPI();
+    key.dpi_x = ppi.GetWidth();
+    key.dpi_y = ppi.GetHeight();
+
+    const auto existing = impl_->glyph_runs_.find(key);
+    if (existing != impl_->glyph_runs_.end()) {
+        ++impl_->paint_metrics_.glyph_run_cache_hits;
+        return existing->second.bitmap;
+    }
+
+    ++impl_->paint_metrics_.glyph_run_cache_misses;
+    constexpr std::size_t max_glyph_runs = 1024;
+    if (impl_->glyph_runs_.size() >= max_glyph_runs)
+        impl_->glyph_runs_.clear();
+
+    const wxFont& font = GlyphFont(run.attributes);
+    dc.SetFont(font);
+    const wxSize measured_size = dc.GetTextExtent(text);
+    const int run_width = static_cast<int>(run.cell_count) *
+        impl_->cell_width_;
+    const int bitmap_width = std::max(1, std::max(run_width,
+                                                  measured_size.GetWidth()));
+    const int bitmap_height = std::max(1, impl_->cell_height_);
+
+    wxBitmap bitmap(bitmap_width, bitmap_height, -1);
+    if (bitmap.IsOk()) {
+        wxMemoryDC glyph_dc(bitmap);
+        glyph_dc.SetBackground(wxBrush(wxColour(background[0], background[1],
+                                                 background[2])));
+        glyph_dc.Clear();
+        glyph_dc.SetTextForeground(wxColour(foreground[0], foreground[1],
+                                            foreground[2]));
+        glyph_dc.SetFont(font);
+        glyph_dc.DrawText(text, 0, 0);
+        glyph_dc.SelectObject(wxNullBitmap);
+    }
+
+    auto inserted = impl_->glyph_runs_.emplace(std::move(key),
+                                                 GlyphRunResource {});
+    inserted.first->second.bitmap = bitmap;
+    inserted.first->second.measured_size = measured_size;
+    return inserted.first->second.bitmap;
+}
+
 void WxTerminalCtrl::RenderFrame(wxDC& dc,
                                  const SakuraTerminalFrame* frame,
                                  const SakuraTerminalFrameInfo& info,
@@ -466,9 +587,21 @@ void WxTerminalCtrl::RenderFrame(wxDC& dc,
             }
             if (has_glyph && run.text_length > 0) {
                 const wxString& glyph = GlyphText(run.text, run.text_length);
-                if (!glyph.empty())
-                    dc.DrawText(glyph, run.left * impl_->cell_width_,
-                                row * impl_->cell_height_);
+                if (!glyph.empty()) {
+                    const wxBitmap& glyph_bitmap = GlyphRunBitmap(
+                        dc, run, glyph, foreground, background);
+                    if (glyph_bitmap.IsOk()) {
+                        dc.DrawBitmap(glyph_bitmap,
+                                      run.left * impl_->cell_width_,
+                                      row * impl_->cell_height_, false);
+                    } else {
+                        dc.SetTextForeground(
+                            impl_->ColorResourcesFor(foreground).color);
+                        dc.SetFont(GlyphFont(run.attributes));
+                        dc.DrawText(glyph, run.left * impl_->cell_width_,
+                                    row * impl_->cell_height_);
+                    }
+                }
             }
             if ((run.attributes & 0x04) != 0) {
                 dc.SetPen(impl_->ColorResourcesFor(foreground).pen);
@@ -1044,6 +1177,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          "mouse=%llu/%llu modes=%llu "
                          "paint=%llu full/%llu partial cells=%llu "
                          "paint-max=%lluus refresh=%llu/%llu dirty "
+                         "glyph-cache=%llu/%llu "
                          "transport-read=%lluB/%llu "
                          "queue-high-water=%llu resize=%llu\n",
                          static_cast<unsigned long long>(core_metrics.output_bytes),
@@ -1065,6 +1199,8 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          static_cast<unsigned long long>(impl_->paint_metrics_.max_paint_time_us),
                          static_cast<unsigned long long>(impl_->paint_metrics_.refresh_requests),
                          static_cast<unsigned long long>(impl_->paint_metrics_.dirty_refresh_requests),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_hits),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_misses),
                          static_cast<unsigned long long>(transport_metrics.bytes_read),
                          static_cast<unsigned long long>(transport_metrics.read_events),
                          static_cast<unsigned long long>(transport_metrics.max_queued_bytes),

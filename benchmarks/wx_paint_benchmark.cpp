@@ -21,6 +21,8 @@ struct MetricDelta {
     std::uint64_t refresh_requests = 0;
     std::uint64_t full_refresh_requests = 0;
     std::uint64_t dirty_refresh_requests = 0;
+    std::uint64_t glyph_run_cache_hits = 0;
+    std::uint64_t glyph_run_cache_misses = 0;
 };
 
 MetricDelta Difference(const WxPaintMetrics& before,
@@ -36,6 +38,8 @@ MetricDelta Difference(const WxPaintMetrics& before,
         after.refresh_requests - before.refresh_requests,
         after.full_refresh_requests - before.full_refresh_requests,
         after.dirty_refresh_requests - before.dirty_refresh_requests,
+        after.glyph_run_cache_hits - before.glyph_run_cache_hits,
+        after.glyph_run_cache_misses - before.glyph_run_cache_misses,
     };
 }
 
@@ -84,7 +88,8 @@ public:
     {
         std::cout << "scenario\titerations\telapsed_ms\tpaint_events\t"
                      "full_repaints\tpartial_repaints\tpainted_cells\t"
-                     "paint_time_us\tfull_refreshes\tdirty_refreshes\n";
+                     "paint_time_us\tfull_refreshes\tdirty_refreshes\t"
+                     "glyph_cache_hits\tglyph_cache_misses\n";
         const ScenarioKind scenarios[] = {
             ScenarioKind::FullAscii,
             ScenarioKind::PartialAscii,
@@ -173,7 +178,9 @@ private:
                   << metrics.painted_cells << '\t'
                   << metrics.paint_time_us << '\t'
                   << metrics.full_refresh_requests << '\t'
-                  << metrics.dirty_refresh_requests << '\n';
+                  << metrics.dirty_refresh_requests << '\t'
+                  << metrics.glyph_run_cache_hits << '\t'
+                  << metrics.glyph_run_cache_misses << '\n';
 
         frame->Destroy();
         wxYield();
