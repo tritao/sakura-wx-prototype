@@ -171,8 +171,9 @@ public:
           config_(config),
           metrics_(metrics),
           font_(CreateTerminalFont(config)),
-          background_brush_(wxColour(config.background[0], config.background[1],
-                                     config.background[2]))
+          background_brush_(wxColour(config.theme.background[0],
+                                     config.theme.background[1],
+                                     config.theme.background[2]))
     {
         trace_scroll_ = std::getenv("SAKURA_TRACE_SCROLL") != nullptr;
         glyph_font_identity_ = std::hash<std::string>{}(
@@ -274,8 +275,8 @@ public:
         if (!framebuffer_valid_ || full_repaint) {
             ++metrics_.full_repaints;
             framebuffer_dc.SetBackground(wxBrush(wxColour(
-                config_.background[0], config_.background[1],
-                config_.background[2])));
+                config_.theme.background[0], config_.theme.background[1],
+                config_.theme.background[2])));
             framebuffer_dc.Clear();
             const SakuraTerminalDirtyRegion full_region {
                 0, 0, info.columns, info.rows
@@ -574,7 +575,10 @@ private:
                          (bottom - top) * cell_height_);
         ++metrics_.background_rectangles;
 
-        const uint32_t default_background = ColorKey(config_.background);
+        const std::array<uint8_t, 3> default_background_color {
+            config_.theme.background[0], config_.theme.background[1],
+            config_.theme.background[2]};
+        const uint32_t default_background = ColorKey(default_background_color);
         const bool cache_glyphs = config_.glyph_cache_enabled &&
             (!config_.glyph_cache_bypass_scroll || info.scroll_delta == 0);
         const unsigned int glyph_run_span_cells = std::max(

@@ -8,6 +8,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(SAKURA_ENABLE_PACKAGE_CONSUMER_TEST
+       "Build and test the installed package from an external CMake project"
+       OFF)
+
 find_package(Threads REQUIRED)
 include(CTest)
 include(GNUInstallDirs)
@@ -299,6 +303,23 @@ if(BUILD_TESTING)
         Sakura::TerminalTransport
     )
     add_test(NAME library_consumer COMMAND sakura_library_consumer_test)
+
+    if(SAKURA_ENABLE_PACKAGE_CONSUMER_TEST)
+        add_test(NAME package_consumer
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DSAKURA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                    "-DSAKURA_BUILD_DIR=${CMAKE_BINARY_DIR}"
+                    "-DSAKURA_CONSUMER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/package_consumer"
+                    "-DSAKURA_CONSUMER_BINARY_DIR=${CMAKE_BINARY_DIR}/package-consumer"
+                    "-DSAKURA_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/package-install"
+                    "-DSAKURA_CONFIG=$<CONFIG>"
+                    "-DSAKURA_GENERATOR=${CMAKE_GENERATOR}"
+                    "-DSAKURA_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+                    "-DSAKURA_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_consumer.cmake"
+        )
+        set_tests_properties(package_consumer PROPERTIES TIMEOUT 60)
+    endif()
 
     add_executable(sakura_c_core_consumer_test
         tests/c_core_consumer_test.c

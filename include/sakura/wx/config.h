@@ -9,13 +9,27 @@
 #include <functional>
 #include <string>
 
+inline SakuraTerminalTheme SakuraWxDefaultTheme()
+{
+    SakuraTerminalTheme theme {};
+    sakura_terminal_theme_default(&theme);
+    // Keep Sakura's wx surface default while retaining the library's base16
+    // ANSI palette and default foreground.
+    theme.background[0] = 16;
+    theme.background[1] = 18;
+    theme.background[2] = 20;
+    return theme;
+}
+
 struct TerminalConfig {
     std::string font_family = "DejaVu Sans Mono";
     int font_size = 10;
     // Use wxWidgets' platform monospace family by default. Set this to false
     // to honor font_family as an explicit face-name override.
     bool use_system_font = true;
-    std::array<uint8_t, 3> background {16, 18, 20};
+    // Terminal colors are shared with the toolkit-neutral core. The theme's
+    // background also fills the wx client area outside the terminal grid.
+    SakuraTerminalTheme theme = SakuraWxDefaultTheme();
     std::array<uint8_t, 3> error_foreground {240, 180, 90};
     unsigned int timer_interval_ms = 16;
     // Bound one UI-thread output drain so continuous writers cannot starve

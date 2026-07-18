@@ -34,12 +34,8 @@ public:
     {
         trace_scroll_ = std::getenv("SAKURA_TRACE_SCROLL") != nullptr;
         trace_keys_ = std::getenv("SAKURA_TRACE_KEYS") != nullptr;
-        SakuraTerminalTheme theme {};
-        sakura_terminal_theme_default(&theme);
-        std::copy(config_.background.begin(), config_.background.end(),
-                  theme.background);
         core_ = sakura_terminal_new_with_theme(&Impl::WriteBridge, this,
-                                                &theme);
+                                                &config_.theme);
     }
 
     ~Impl()
@@ -375,7 +371,7 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         impl_->renderer_.RecordPaintDuration(elapsed_us);
     };
     wxAutoBufferedPaintDC dc(this);
-    const auto& background = impl_->config_.background;
+    const auto& background = impl_->config_.theme.background;
     dc.SetBackground(wxBrush(wxColour(background[0], background[1],
                                        background[2])));
 

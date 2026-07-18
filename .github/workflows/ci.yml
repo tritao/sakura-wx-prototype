@@ -62,6 +62,37 @@ jobs:
           --output-on-failure
           -E "transport_smoke|transport_lifecycle"
 
+  package-consumer:
+    name: ubuntu-latest / installed package consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwxgtk3.2-dev xvfb
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build-package-consumer
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DSAKURA_ENABLE_PACKAGE_CONSUMER_TEST=ON
+
+      - name: Build
+        run: cmake --build build-package-consumer --config Debug --parallel
+
+      - name: Test installed package consumer
+        run: >-
+          ctest --test-dir build-package-consumer --build-config Debug
+          --output-on-failure -R '^package_consumer$'
+
   linux-sanitizers:
     name: ubuntu-latest / sanitizers
     runs-on: ubuntu-latest

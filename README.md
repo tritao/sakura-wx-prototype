@@ -53,6 +53,11 @@ TerminalConfig config;
 config.use_system_font = true;
 config.font_size = 10;
 config.start_transport = true;
+// Terminal colors are shared by the core and wx renderer.
+config.theme.background[0] = 16;
+config.theme.background[1] = 18;
+config.theme.background[2] = 20;
+config.theme.ansi[1][0] = 220; // ANSI red, for example.
 
 TerminalCallbacks callbacks;
 callbacks.on_title_changed = [](const std::string& title) {
@@ -135,6 +140,20 @@ target_link_libraries(my_terminal_app PRIVATE Sakura::WxTerminal)
 
 The source-tree build keeps wxWidgets as the pinned submodule; the installed
 package treats wxWidgets as a normal external dependency.
+
+The installed package consumer check reuses the canonical `src/main.cpp`
+example from a separate CMake project. Run it on a host with wxWidgets
+development files installed:
+
+```sh
+cmake -S . -B build-package-consumer \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DBUILD_TESTING=ON \
+  -DSAKURA_ENABLE_PACKAGE_CONSUMER_TEST=ON
+cmake --build build-package-consumer -j
+ctest --test-dir build-package-consumer --output-on-failure \
+  -R '^package_consumer$'
+```
 
 ## Testing
 
