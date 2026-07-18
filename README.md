@@ -168,7 +168,14 @@ resize, scrolling, cursor, and selection workloads:
 
 ```sh
 xvfb-run -a ./build/sakura-wx-paint-benchmark
+# Emit JSON for tooling; the process exits nonzero if renderer invariants fail.
+xvfb-run -a ./build/sakura-wx-paint-benchmark --json
 ```
+
+When benchmarks are enabled, `wx_paint_regression` runs the JSON benchmark
+under CTest and checks cache byte/entry limits, LRU churn, and cached versus
+uncached draw-path behavior. It intentionally does not gate on wall-clock
+timings, which are display-server and build-mode dependent.
 
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,

@@ -3,9 +3,12 @@
 #include <wx/wx.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -109,6 +112,15 @@ const char* ScenarioName(ScenarioKind kind)
     return "unknown";
 }
 
+struct ScenarioResult {
+    ScenarioKind kind;
+    double elapsed_ms = 0.0;
+    bool glyph_cache_enabled = true;
+    std::size_t glyph_cache_max_bytes = 0;
+    std::size_t glyph_cache_max_entries = 0;
+    MetricDelta metrics;
+};
+
 class BenchmarkApp final : public wxApp {
 public:
     bool OnInit() override
@@ -118,15 +130,6 @@ public:
 
     int OnRun() override
     {
-        std::cout << "scenario\titerations\telapsed_ms\tpaint_events\t"
-                     "full_repaints\tpartial_repaints\tpainted_cells\t"
-                     "paint_time_us\tmax_paint_us\tfull_refreshes\t"
-                     "dirty_refreshes\t"
-                     "glyph_cache_hits\tglyph_cache_misses\t"
-                     "glyph_cache_evictions\tglyph_cache_entries\t"
-                     "glyph_cache_bytes\tglyph_cache_peak_bytes\t"
-                     "background_rectangles\tglyph_bitmap_draws\t"
-                     "glyph_text_draws\tdc_state_changes\n";
         const ScenarioKind scenarios[] = {
             ScenarioKind::FullAscii,
             ScenarioKind::PartialAscii,
@@ -140,12 +143,163 @@ public:
             ScenarioKind::Cursor,
             ScenarioKind::Selection,
         };
-        for (ScenarioKind scenario : scenarios)
-            RunScenario(scenario);
-        return 0;
+        std::vector<ScenarioResult> results;
+        results.reserve(sizeof(scenarios) / sizeof(scenarios[0]));
+        bool all_valid = true;
+        for (ScenarioKind scenario : scenarios) {
+            ScenarioResult result = RunScenario(scenario);
+            all_valid = Validate(result) && all_valid;
+            results.push_back(std::move(result));
+        }
+
+        if (JsonRequested())
+            PrintJson(results, all_valid);
+        else
+            PrintTsv(results);
+        return all_valid ? 0 : 1;
     }
 
 private:
+    bool JsonRequested() const
+    {
+        for (int index = 1; index < argc; ++index) {
+            if (wxString(argv[index]) == "--json")
+                return true;
+        }
+        return false;
+    }
+
+    static bool Validate(const ScenarioResult& result)
+    {
+        const MetricDelta& metrics = result.metrics;
+        bool valid = true;
+        const auto fail = [&](const char* message) {
+            std::cerr << "benchmark invariant failed for "
+                      << ScenarioName(result.kind) << ": " << message << '\n';
+            valid = false;
+        };
+        if (metrics.glyph_run_cache_bytes > result.glyph_cache_max_bytes)
+            fail("cache bytes exceeded configured limit");
+        if (metrics.glyph_run_cache_peak_bytes > result.glyph_cache_max_bytes)
+            fail("cache peak bytes exceeded configured limit");
+        if (metrics.glyph_run_cache_entries > result.glyph_cache_max_entries)
+            fail("cache entries exceeded configured limit");
+        if (metrics.glyph_run_cache_peak_bytes < metrics.glyph_run_cache_bytes)
+            fail("cache peak bytes fell below current occupancy");
+
+        if (!result.glyph_cache_enabled &&
+            (metrics.glyph_run_cache_entries != 0 ||
+             metrics.glyph_run_cache_bytes != 0 ||
+             metrics.glyph_run_cache_evictions != 0)) {
+            fail("disabled cache retained entries or evictions");
+        }
+        if (result.kind == ScenarioKind::GlyphCacheChurn) {
+            if (metrics.glyph_run_cache_evictions == 0)
+                fail("churn did not evict any cache entries");
+            if (metrics.glyph_bitmap_draws == 0)
+                fail("churn did not render any bitmap glyphs");
+        }
+        if (result.kind == ScenarioKind::PartialUnicode) {
+            if (metrics.glyph_bitmap_draws == 0 || metrics.glyph_text_draws != 0)
+                fail("cached Unicode did not use only bitmap draws");
+            if (metrics.glyph_run_cache_hits == 0)
+                fail("cached Unicode did not produce a cache hit");
+        }
+        if (result.kind == ScenarioKind::PartialUnicodeUncached &&
+            (metrics.glyph_bitmap_draws != 0 || metrics.glyph_text_draws == 0)) {
+            fail("uncached Unicode did not use direct text draws");
+        }
+        return valid;
+    }
+
+    static void PrintTsv(const std::vector<ScenarioResult>& results)
+    {
+        std::cout << "scenario\titerations\telapsed_ms\t"
+                     "glyph_cache_max_bytes\tglyph_cache_max_entries\t"
+                     "paint_events\tfull_repaints\tpartial_repaints\t"
+                     "painted_cells\tpaint_time_us\tmax_paint_us\t"
+                     "full_refreshes\tdirty_refreshes\t"
+                     "glyph_cache_hits\tglyph_cache_misses\t"
+                     "glyph_cache_evictions\tglyph_cache_entries\t"
+                     "glyph_cache_bytes\tglyph_cache_peak_bytes\t"
+                     "background_rectangles\tglyph_bitmap_draws\t"
+                     "glyph_text_draws\tdc_state_changes\n";
+        std::cout << std::fixed << std::setprecision(3);
+        for (const ScenarioResult& result : results) {
+            const MetricDelta& metrics = result.metrics;
+            std::cout << ScenarioName(result.kind) << '\t'
+                      << kIterations << '\t'
+                      << result.elapsed_ms << '\t'
+                      << result.glyph_cache_max_bytes << '\t'
+                      << result.glyph_cache_max_entries << '\t'
+                      << metrics.paint_events << '\t'
+                      << metrics.full_repaints << '\t'
+                      << metrics.partial_repaints << '\t'
+                      << metrics.painted_cells << '\t'
+                      << metrics.paint_time_us << '\t'
+                      << metrics.max_paint_time_us << '\t'
+                      << metrics.full_refresh_requests << '\t'
+                      << metrics.dirty_refresh_requests << '\t'
+                      << metrics.glyph_run_cache_hits << '\t'
+                      << metrics.glyph_run_cache_misses << '\t'
+                      << metrics.glyph_run_cache_evictions << '\t'
+                      << metrics.glyph_run_cache_entries << '\t'
+                      << metrics.glyph_run_cache_bytes << '\t'
+                      << metrics.glyph_run_cache_peak_bytes << '\t'
+                      << metrics.background_rectangles << '\t'
+                      << metrics.glyph_bitmap_draws << '\t'
+                      << metrics.glyph_text_draws << '\t'
+                      << metrics.dc_state_changes << '\n';
+        }
+    }
+
+    static void PrintJson(const std::vector<ScenarioResult>& results,
+                          bool all_valid)
+    {
+        std::cout << std::fixed << std::setprecision(3);
+        std::cout << "{\n  \"benchmark\": \"sakura-wx-paint\",\n"
+                     "  \"iterations\": " << kIterations << ",\n"
+                     "  \"invariants_passed\": "
+                  << (all_valid ? "true" : "false") << ",\n"
+                     "  \"scenarios\": [\n";
+        for (std::size_t index = 0; index < results.size(); ++index) {
+            const ScenarioResult& result = results[index];
+            const MetricDelta& metrics = result.metrics;
+            std::cout << "    {\n      \"name\": \""
+                      << ScenarioName(result.kind) << "\",\n"
+                      << "      \"elapsed_ms\": " << result.elapsed_ms << ",\n"
+                      << "      \"glyph_cache_enabled\": "
+                      << (result.glyph_cache_enabled ? "true" : "false")
+                      << ",\n"
+                      << "      \"glyph_cache_max_bytes\": "
+                      << result.glyph_cache_max_bytes << ",\n"
+                      << "      \"glyph_cache_max_entries\": "
+                      << result.glyph_cache_max_entries << ",\n"
+                      << "      \"metrics\": {\n"
+                      << "        \"paint_events\": " << metrics.paint_events << ",\n"
+                      << "        \"full_repaints\": " << metrics.full_repaints << ",\n"
+                      << "        \"partial_repaints\": " << metrics.partial_repaints << ",\n"
+                      << "        \"painted_cells\": " << metrics.painted_cells << ",\n"
+                      << "        \"paint_time_us\": " << metrics.paint_time_us << ",\n"
+                      << "        \"max_paint_us\": " << metrics.max_paint_time_us << ",\n"
+                      << "        \"full_refreshes\": " << metrics.full_refresh_requests << ",\n"
+                      << "        \"dirty_refreshes\": " << metrics.dirty_refresh_requests << ",\n"
+                      << "        \"glyph_cache_hits\": " << metrics.glyph_run_cache_hits << ",\n"
+                      << "        \"glyph_cache_misses\": " << metrics.glyph_run_cache_misses << ",\n"
+                      << "        \"glyph_cache_evictions\": " << metrics.glyph_run_cache_evictions << ",\n"
+                      << "        \"glyph_cache_entries\": " << metrics.glyph_run_cache_entries << ",\n"
+                      << "        \"glyph_cache_bytes\": " << metrics.glyph_run_cache_bytes << ",\n"
+                      << "        \"glyph_cache_peak_bytes\": " << metrics.glyph_run_cache_peak_bytes << ",\n"
+                      << "        \"background_rectangles\": " << metrics.background_rectangles << ",\n"
+                      << "        \"glyph_bitmap_draws\": " << metrics.glyph_bitmap_draws << ",\n"
+                      << "        \"glyph_text_draws\": " << metrics.glyph_text_draws << ",\n"
+                      << "        \"dc_state_changes\": " << metrics.dc_state_changes << "\n"
+                      << "      }\n    }"
+                      << (index + 1 == results.size() ? "\n" : ",\n");
+        }
+        std::cout << "  ]\n}\n";
+    }
+
     static void PumpPaint(WxTerminalCtrl& terminal)
     {
         terminal.RefreshFrame();
@@ -154,7 +308,7 @@ private:
         wxYield();
     }
 
-    void RunScenario(ScenarioKind kind)
+    ScenarioResult RunScenario(ScenarioKind kind)
     {
         auto* frame = new wxFrame(nullptr, wxID_ANY, "Sakura wx paint benchmark",
                                   wxDefaultPosition, wxSize(1280, 720));
@@ -276,30 +430,17 @@ private:
         const MetricDelta metrics = Difference(before, terminal->GetPaintMetrics());
         const double elapsed_ms =
             std::chrono::duration<double, std::milli>(finish - start).count();
-        std::cout << ScenarioName(kind) << '\t'
-                  << kIterations << '\t'
-                  << elapsed_ms << '\t'
-                  << metrics.paint_events << '\t'
-                  << metrics.full_repaints << '\t'
-                  << metrics.partial_repaints << '\t'
-                  << metrics.painted_cells << '\t'
-                  << metrics.paint_time_us << '\t'
-                  << metrics.max_paint_time_us << '\t'
-                  << metrics.full_refresh_requests << '\t'
-                  << metrics.dirty_refresh_requests << '\t'
-                  << metrics.glyph_run_cache_hits << '\t'
-                  << metrics.glyph_run_cache_misses << '\t'
-                  << metrics.glyph_run_cache_evictions << '\t'
-                  << metrics.glyph_run_cache_entries << '\t'
-                  << metrics.glyph_run_cache_bytes << '\t'
-                  << metrics.glyph_run_cache_peak_bytes << '\t'
-                  << metrics.background_rectangles << '\t'
-                  << metrics.glyph_bitmap_draws << '\t'
-                  << metrics.glyph_text_draws << '\t'
-                  << metrics.dc_state_changes << '\n';
+        ScenarioResult result;
+        result.kind = kind;
+        result.elapsed_ms = elapsed_ms;
+        result.glyph_cache_enabled = config.glyph_cache_enabled;
+        result.glyph_cache_max_bytes = config.glyph_cache_max_bytes;
+        result.glyph_cache_max_entries = config.glyph_cache_max_entries;
+        result.metrics = metrics;
 
         frame->Destroy();
         wxYield();
+        return result;
     }
 };
 
