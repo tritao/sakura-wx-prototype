@@ -1339,47 +1339,6 @@ static bool ForEachPackedRunSpan(const PackedRow& row,
     return true;
 }
 
-static std::size_t PackedRunSpanCount(const PackedRow& row,
-                                      const PackedRun& source,
-                                      unsigned int max_cells)
-{
-    if (max_cells == 0)
-        return 0;
-    std::size_t count = 0;
-    if (!ForEachPackedRunSpan(row, source, max_cells,
-            [&](const PackedRun&) {
-                ++count;
-                return true;
-            }))
-        return 0;
-    return count;
-}
-
-static bool PackedRowSpanAt(const PackedRow& row, std::size_t span_index,
-                            unsigned int max_cells, PackedRun* span)
-{
-    if (span == nullptr || max_cells == 0)
-        return false;
-
-    std::size_t current_index = 0;
-    for (const PackedRun& source : row.runs) {
-        bool found = false;
-        const bool complete = ForEachPackedRunSpan(
-            row, source, max_cells, [&](const PackedRun& candidate) {
-                if (current_index++ != span_index)
-                    return true;
-                *span = candidate;
-                found = true;
-                return false;
-            });
-        if (found)
-            return true;
-        if (!complete)
-            return false;
-    }
-    return false;
-}
-
 extern "C" {
 
 void sakura_terminal_theme_default(SakuraTerminalTheme* theme)
@@ -1734,54 +1693,6 @@ int sakura_terminal_frame_row_run(const SakuraTerminalFrame* frame,
             return 0;
         const PackedRun& source = source_row.runs[index];
         return FillPackedRunView(grid, source_row, row, source, run) ? 1 : 0;
-    } catch (...) {
-        return 0;
-    }
-}
-
-size_t sakura_terminal_frame_row_span_count(
-    const SakuraTerminalFrame* frame, unsigned int row,
-    unsigned int max_cells)
-{
-    try {
-        if (frame == nullptr || frame->packed_frame == nullptr ||
-            frame->packed_frame->grid == nullptr || max_cells == 0)
-            return 0;
-        const PackedFrame& packed = *frame->packed_frame;
-        const PackedGrid& grid = *packed.grid;
-        if (row >= packed.rows || row >= grid.row_data.size() ||
-            grid.row_data[row] == nullptr)
-            return 0;
-        const PackedRow& source_row = *grid.row_data[row];
-        std::size_t count = 0;
-        for (const PackedRun& source : source_row.runs)
-            count += PackedRunSpanCount(source_row, source, max_cells);
-        return count;
-    } catch (...) {
-        return 0;
-    }
-}
-
-int sakura_terminal_frame_row_span(const SakuraTerminalFrame* frame,
-                                   unsigned int row, size_t index,
-                                   unsigned int max_cells,
-                                   SakuraTerminalRunView* span)
-{
-    try {
-        if (frame == nullptr || span == nullptr ||
-            frame->packed_frame == nullptr ||
-            frame->packed_frame->grid == nullptr || max_cells == 0)
-            return 0;
-        const PackedFrame& packed = *frame->packed_frame;
-        const PackedGrid& grid = *packed.grid;
-        if (row >= packed.rows || row >= grid.row_data.size() ||
-            grid.row_data[row] == nullptr)
-            return 0;
-        const PackedRow& source_row = *grid.row_data[row];
-        PackedRun bounded {};
-        return PackedRowSpanAt(source_row, index, max_cells, &bounded) &&
-                FillPackedRunView(grid, source_row, row, bounded, span)
-            ? 1 : 0;
     } catch (...) {
         return 0;
     }

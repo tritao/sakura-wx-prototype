@@ -229,19 +229,10 @@ size_t sakura_terminal_frame_row_run_count(
 int sakura_terminal_frame_row_run(const SakuraTerminalFrame *frame,
                                   unsigned int row, size_t index,
                                   SakuraTerminalRunView *run);
-/* Return flattened, style-homogeneous spans for a row. `max_cells` must be
- * non-zero; a wide glyph may make an individual span exceed a bound of one
- * cell so its two-cell advance is never split. */
-size_t sakura_terminal_frame_row_span_count(
-    const SakuraTerminalFrame *frame, unsigned int row,
-    unsigned int max_cells);
-int sakura_terminal_frame_row_span(const SakuraTerminalFrame *frame,
-                                   unsigned int row, size_t index,
-                                   unsigned int max_cells,
-                                   SakuraTerminalRunView *span);
-/* Visit all flattened row spans in one pass. This avoids the repeated
- * rescanning inherent in count-plus-index access when a renderer needs every
- * span. Returns zero for invalid arguments or an invalid frame. */
+/* Visit flattened, style-homogeneous spans for a row in one pass. `max_cells`
+ * must be non-zero; a wide glyph may make an individual span exceed a bound
+ * of one cell so its two-cell advance is never split. Returns zero for
+ * invalid arguments or an invalid frame. */
 int sakura_terminal_frame_for_each_row_span(
     const SakuraTerminalFrame *frame, unsigned int row,
     unsigned int max_cells, SakuraTerminalFrameSpanCallback callback,

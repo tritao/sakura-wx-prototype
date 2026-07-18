@@ -16,16 +16,27 @@ static int check(int condition, const char *message)
 }
 
 struct SpanCollector {
+    const SakuraTerminalFrame *frame;
     size_t count;
     unsigned int next_left;
+    unsigned int max_cells;
     int valid;
 };
 
 static void collect_span(void *userdata, const SakuraTerminalRunView *span)
 {
     struct SpanCollector *collector = (struct SpanCollector *)userdata;
+    SakuraTerminalCellView first_cell;
+    SakuraTerminalCellView last_cell;
     if (collector == NULL || span == NULL || span->cell_count == 0 ||
-        span->left != collector->next_left || span->cell_count > 32) {
+        span->left != collector->next_left ||
+        span->cell_count > collector->max_cells ||
+        collector->frame == NULL ||
+        !sakura_terminal_frame_cell(collector->frame, span->left, 0,
+                                    &first_cell) || first_cell.width == 0 ||
+        !sakura_terminal_frame_cell(
+            collector->frame, span->left + span->cell_count - 1, 0,
+            &last_cell) || last_cell.width == 2) {
         if (collector != NULL)
             collector->valid = 0;
         return;
@@ -227,62 +238,26 @@ int main(void)
         sakura_terminal_free(terminal);
         return 1;
     }
-    const size_t span_count = sakura_terminal_frame_row_span_count(
-        span_frame, 0, SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS);
-    unsigned int next_left = 0;
-    for (size_t index = 0; index < span_count; ++index) {
-        SakuraTerminalRunView span;
-        if (!check(sakura_terminal_frame_row_span(
-                       span_frame, 0, index,
-                       SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS, &span) &&
-                       span.left == next_left && span.cell_count > 0 &&
-                       span.cell_count <=
-                           SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS,
-                   "C API emitted an invalid bounded run span")) {
-            sakura_terminal_frame_free(span_frame);
-            sakura_terminal_free(span_terminal);
-            sakura_terminal_free(terminal);
-            return 1;
-        }
-        SakuraTerminalCellView first_cell;
-        SakuraTerminalCellView last_cell;
-        if (!check(sakura_terminal_frame_cell(
-                       span_frame, span.left, 0, &first_cell) &&
-                       first_cell.width != 0 &&
-                       sakura_terminal_frame_cell(
-                           span_frame, span.left + span.cell_count - 1, 0,
-                           &last_cell) && last_cell.width != 2,
-                   "C API split a wide glyph at a run boundary")) {
-            sakura_terminal_frame_free(span_frame);
-            sakura_terminal_free(span_terminal);
-            sakura_terminal_free(terminal);
-            return 1;
-        }
-        next_left += span.cell_count;
-    }
-    if (!check(span_count >= 4 && next_left == 100,
-               "C API bounded run spans did not cover the row")) {
-        sakura_terminal_frame_free(span_frame);
-        sakura_terminal_free(span_terminal);
-        sakura_terminal_free(terminal);
-        return 1;
-    }
-    const size_t narrow_span_count = sakura_terminal_frame_row_span_count(
-        span_frame, 0, 16);
-    if (!check(narrow_span_count > span_count,
-               "C API span bound was not caller-configurable")) {
-        sakura_terminal_frame_free(span_frame);
-        sakura_terminal_free(span_terminal);
-        sakura_terminal_free(terminal);
-        return 1;
-    }
-    struct SpanCollector collected = {0, 0, 1};
+    struct SpanCollector collected = {
+        span_frame, 0, 0, SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS, 1
+    };
     if (!check(sakura_terminal_frame_for_each_row_span(
-                   span_frame, 0,
-                   SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS,
+                   span_frame, 0, collected.max_cells,
                    &collect_span, &collected) && collected.valid &&
-                   collected.count == span_count && collected.next_left == 100,
-               "C API row span iterator did not cover the row in order")) {
+                   collected.count >= 4 && collected.next_left == 100,
+               "C API one-pass span visitor did not cover the row")) {
+        sakura_terminal_frame_free(span_frame);
+        sakura_terminal_free(span_terminal);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    const size_t wide_span_count = collected.count;
+    struct SpanCollector narrow = {span_frame, 0, 0, 16, 1};
+    if (!check(sakura_terminal_frame_for_each_row_span(
+                   span_frame, 0, narrow.max_cells,
+                   &collect_span, &narrow) && narrow.valid &&
+                   narrow.count > wide_span_count && narrow.next_left == 100,
+               "C API span bound was not caller-configurable")) {
         sakura_terminal_frame_free(span_frame);
         sakura_terminal_free(span_terminal);
         sakura_terminal_free(terminal);
