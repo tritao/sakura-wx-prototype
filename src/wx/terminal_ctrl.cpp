@@ -22,6 +22,17 @@
 
 #include <xkbcommon/xkbcommon-keysyms.h>
 
+namespace {
+
+uint32_t ColorKey(const std::array<uint8_t, 3>& color)
+{
+    return (static_cast<uint32_t>(color[0]) << 16) |
+           (static_cast<uint32_t>(color[1]) << 8) |
+           static_cast<uint32_t>(color[2]);
+}
+
+} // namespace
+
 class WxTerminalCtrl::Impl {
 public:
     Impl(WxTerminalCtrl& owner, std::unique_ptr<TerminalTransport> transport,
@@ -36,11 +47,36 @@ public:
                   transport_->Write(data, length);
           })
     {
+        const auto& background = config_.background;
+        background_brush_ = wxBrush(wxColour(background[0], background[1],
+                                              background[2]));
     }
 
     void AssertOwnerThread() const
     {
         assert(std::this_thread::get_id() == owner_thread_);
+    }
+
+    struct ColorResources {
+        wxColour color;
+        wxBrush brush;
+        wxPen pen;
+    };
+
+    const ColorResources& ColorResourcesFor(
+        const std::array<uint8_t, 3>& color)
+    {
+        const uint32_t key = ColorKey(color);
+        const auto existing = color_resources_.find(key);
+        if (existing != color_resources_.end())
+            return existing->second;
+        if (color_resources_.size() >= 4096)
+            color_resources_.clear();
+
+        const wxColour wx_color(color[0], color[1], color[2]);
+        const auto inserted = color_resources_.emplace(
+            key, ColorResources {wx_color, wxBrush(wx_color), wxPen(wx_color)});
+        return inserted.first->second;
     }
 
     WxTerminalCtrl& owner_;
@@ -51,6 +87,8 @@ public:
     std::array<wxFont, 8> glyph_fonts_;
     std::array<bool, 8> glyph_fonts_valid_ {};
     std::unordered_map<std::string, wxString> glyph_texts_;
+    std::unordered_map<uint32_t, ColorResources> color_resources_;
+    wxBrush background_brush_;
     wxBitmap framebuffer_;
     bool framebuffer_valid_ = false;
     TerminalFrame pending_frame_;
@@ -331,45 +369,90 @@ void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
     if (left >= right || top >= bottom)
         return;
 
-    const auto& background = impl_->config_.background;
-    const wxBrush background_brush(wxColour(background[0], background[1],
-                                             background[2]));
     dc.SetPen(*wxTRANSPARENT_PEN);
-    dc.SetBrush(background_brush);
+    dc.SetBrush(impl_->background_brush_);
     dc.DrawRectangle(left * impl_->cell_width_, top * impl_->cell_height_,
                      (right - left) * impl_->cell_width_,
                      (bottom - top) * impl_->cell_height_);
     dc.SetFont(impl_->font_);
 
+    uint32_t current_background = 0xffffffffu;
+    uint32_t current_foreground = 0xffffffffu;
+    uint8_t current_font_attributes = 0xffu;
+
     for (unsigned int row = top; row < bottom; ++row) {
+        wxString glyph_run;
+        unsigned int glyph_run_start = 0;
+        unsigned int glyph_run_end = 0;
+        uint32_t glyph_run_foreground = 0xffffffffu;
+        uint8_t glyph_run_font_attributes = 0xffu;
+        const auto flush_glyph_run = [&]() {
+            if (glyph_run.empty())
+                return;
+            dc.DrawText(glyph_run,
+                        glyph_run_start * impl_->cell_width_,
+                        row * impl_->cell_height_);
+            glyph_run.clear();
+        };
+
         for (unsigned int column = left; column < right; ++column) {
             if (painted_cells != nullptr)
                 ++*painted_cells;
             const auto& cell = snapshot.cells[row * snapshot.columns + column];
-            if (cell.width == 0)
+            if (cell.width == 0) {
+                flush_glyph_run();
                 continue;
+            }
             const unsigned int span = std::min(
                 std::max(1u, cell.width), snapshot.columns - column);
-            dc.SetBrush(wxBrush(wxColour(cell.background[0], cell.background[1],
-                                         cell.background[2])));
+            const uint32_t background_key = ColorKey(cell.background);
+            if (background_key != current_background) {
+                dc.SetBrush(impl_->ColorResourcesFor(cell.background).brush);
+                current_background = background_key;
+            }
             dc.DrawRectangle(column * impl_->cell_width_, row * impl_->cell_height_,
                              span * impl_->cell_width_, impl_->cell_height_);
 
-            dc.SetTextForeground(wxColour(cell.foreground[0], cell.foreground[1],
-                                          cell.foreground[2]));
-            dc.SetFont(GlyphFont(cell.attributes));
+            const uint32_t foreground_key = ColorKey(cell.foreground);
+            if (foreground_key != current_foreground) {
+                flush_glyph_run();
+                dc.SetTextForeground(
+                    impl_->ColorResourcesFor(cell.foreground).color);
+                current_foreground = foreground_key;
+            }
+            const uint8_t font_attributes = cell.attributes & 0x07;
+            if (font_attributes != current_font_attributes) {
+                flush_glyph_run();
+                dc.SetFont(GlyphFont(cell.attributes));
+                current_font_attributes = font_attributes;
+            }
             const wxString& glyph = GlyphText(cell.text);
-            if (!glyph.empty() && cell.text != " ")
-                dc.DrawText(glyph, column * impl_->cell_width_, row * impl_->cell_height_);
+            if (!glyph.empty() && cell.text != " " && cell.width == 1) {
+                if (glyph_run.empty() || glyph_run_end != column ||
+                    glyph_run_foreground != foreground_key ||
+                    glyph_run_font_attributes != font_attributes) {
+                    flush_glyph_run();
+                    glyph_run_start = column;
+                    glyph_run_foreground = foreground_key;
+                    glyph_run_font_attributes = font_attributes;
+                }
+                glyph_run += glyph;
+                glyph_run_end = column + 1;
+            } else {
+                flush_glyph_run();
+                if (!glyph.empty() && cell.text != " ")
+                    dc.DrawText(glyph, column * impl_->cell_width_,
+                                row * impl_->cell_height_);
+            }
             if ((cell.attributes & 0x04) != 0) {
-                dc.SetPen(wxPen(wxColour(cell.foreground[0], cell.foreground[1],
-                                         cell.foreground[2]), 1));
+                dc.SetPen(impl_->ColorResourcesFor(cell.foreground).pen);
                 const int underline_y = (row + 1) * impl_->cell_height_ - 2;
                 dc.DrawLine(column * impl_->cell_width_, underline_y,
                             (column + span) * impl_->cell_width_ - 1, underline_y);
                 dc.SetPen(*wxTRANSPARENT_PEN);
             }
         }
+        flush_glyph_run();
     }
 
     const bool cursor_in_dirty_region =
