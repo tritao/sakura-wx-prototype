@@ -35,6 +35,28 @@ int main()
         }
         Check(!output.empty(), "yes did not produce PTY output");
 
+        const TransportMetrics before_resize = session.GetMetrics();
+        for (unsigned int index = 0; index < 8; ++index) {
+            Check(session.Resize(40 + index * 7, 12 + index),
+                  "resize failed while PTY output was flooding");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        const TransportMetrics saturated = session.GetMetrics();
+        Check(saturated.max_queued_bytes > 0,
+              "PTY output queue did not record any flooded output");
+        Check(saturated.max_queued_bytes <= 1024u * 1024u,
+              "PTY output queue exceeded its high-water limit");
+        Check(saturated.resize_events >= before_resize.resize_events + 8,
+              "resize events were lost during PTY output flooding");
+
+        const auto bounded_drain = session.TakeOutput(1024);
+        std::size_t bounded_bytes = 0;
+        for (const auto& chunk : bounded_drain)
+            bounded_bytes += chunk.size();
+        Check(bounded_bytes <= 1024,
+              "bounded PTY output drain exceeded its byte budget");
+        session.DiscardOutput();
+
         const std::size_t bytes_before_interrupt = output.size();
         Check(session.Write("\x03", 1), "could not send Ctrl-C to the PTY");
         const std::string post_interrupt_command =

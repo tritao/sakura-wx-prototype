@@ -349,6 +349,13 @@ if(BUILD_TESTING)
         target_link_libraries(sakura_pty_interrupt_test PRIVATE sakura_transport)
         add_test(NAME pty_interrupt COMMAND sakura_pty_interrupt_test)
         set_tests_properties(pty_interrupt PROPERTIES TIMEOUT 10)
+
+        add_executable(sakura_pty_signal_test
+            tests/pty_signal_test.cpp
+        )
+        target_link_libraries(sakura_pty_signal_test PRIVATE sakura_transport)
+        add_test(NAME pty_signal COMMAND sakura_pty_signal_test)
+        set_tests_properties(pty_signal PROPERTIES TIMEOUT 15)
     endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -424,6 +431,9 @@ if(BUILD_TESTING)
         endif()
         if(TARGET sakura_pty_interrupt_test)
             sakura_enable_sanitizers(sakura_pty_interrupt_test)
+        endif()
+        if(TARGET sakura_pty_signal_test)
+            sakura_enable_sanitizers(sakura_pty_signal_test)
         endif()
         if(TARGET sakura_wx_font_test)
             sakura_enable_sanitizers(sakura_wx_font_test)
