@@ -155,6 +155,19 @@ option(SAKURA_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSa
 
 option(SAKURA_BUILD_BENCHMARKS "Build terminal rendering benchmarks" OFF)
 if(SAKURA_BUILD_BENCHMARKS)
+    add_executable(sakura-terminal-core-benchmark
+        benchmarks/terminal_core_benchmark.cpp
+    )
+    target_link_libraries(sakura-terminal-core-benchmark PRIVATE
+        sakura_terminal_core
+    )
+    target_compile_features(sakura-terminal-core-benchmark PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(sakura-terminal-core-benchmark PRIVATE /W4)
+    else()
+        target_compile_options(sakura-terminal-core-benchmark PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
     add_executable(sakura-tsm-render-benchmark
         benchmarks/tsm_render_benchmark.cpp
     )
@@ -193,6 +206,9 @@ if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
     sakura_enable_sanitizers(sakura_transport)
     sakura_enable_sanitizers(sakura_wx_terminal)
     sakura_enable_sanitizers(sakura-wx-prototype)
+    if(TARGET sakura-terminal-core-benchmark)
+        sakura_enable_sanitizers(sakura-terminal-core-benchmark)
+    endif()
 endif()
 
 install(TARGETS sakura_libtsm sakura_terminal_core sakura_transport

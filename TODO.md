@@ -35,10 +35,12 @@ cross-platform terminal library and a Sakura frontend foundation.
   - Cache measured and rendered glyph runs by font, attributes, and text.
   - Include wide glyphs, combining marks, and fallback fonts in cache tests.
 
-- [ ] Expand frame timing and rendering benchmarks.
-  - Track input-to-frame latency and frame production rate.
-  - Measure burst output, scrollback, resize, selection, and large-screen cases.
-  - Compare cached and uncached rendering paths.
+- [x] Add a terminal-core frame timing benchmark.
+  - Report feed, packed-frame, and row-run access timings.
+  - Cover full repaint, partial repaint, Unicode/wide/combining output,
+    scrollback, and clean row-run traversal.
+- [ ] Expand the benchmark matrix with burst output, resize, selection,
+  large-screen, and cached-versus-uncached renderer comparisons.
 
 ## Transport reliability and portability
 

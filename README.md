@@ -148,6 +148,16 @@ BUILD_DIR=build-sanitize SAKURA_ENABLE_SANITIZERS=ON RUN_TESTS=1 ./build.sh
 
 The core tests use semantic screen snapshots, while the PTY stress test exercises burst output, repeated resize, child completion, and shutdown. Transport lifecycle tests cover clean exit and failed shell startup. The wx smoke and UX tests run the real window under Xvfb when available.
 
+With `SAKURA_BUILD_BENCHMARKS=ON`, the terminal-core benchmark reports average
+feed, packed-frame, and row-run access time for full repaint, partial repaint,
+Unicode/wide/combining output, scrollback, and clean row-run traversal:
+
+```sh
+cmake -S . -B build -DSAKURA_BUILD_BENCHMARKS=ON
+cmake --build build --target sakura-terminal-core-benchmark -j
+./build/sakura-terminal-core-benchmark
+```
+
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,
 paste accounting, and metrics:
