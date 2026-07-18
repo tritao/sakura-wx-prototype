@@ -160,10 +160,11 @@ cmake --build build --target sakura-terminal-core-benchmark -j
 ```
 
 The wx paint benchmark also reports full/partial paints, painted cells, maximum
-frame paint time, glyph-cache hits/misses, background rectangles, bitmap versus
-direct text draws, and DC state changes. Its matrix covers full and partial
-ASCII, cached versus uncached Unicode/wide/combining output, burst output,
-large screens, resize, scrolling, cursor, and selection workloads:
+frame paint time, glyph-cache hits/misses, evictions, entry/byte occupancy,
+background rectangles, bitmap versus direct text draws, and DC state changes.
+Its matrix covers full and partial ASCII, cached versus uncached
+Unicode/wide/combining output, glyph-cache churn, burst output, large screens,
+resize, scrolling, cursor, and selection workloads:
 
 ```sh
 xvfb-run -a ./build/sakura-wx-paint-benchmark

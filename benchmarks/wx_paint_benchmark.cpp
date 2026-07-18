@@ -24,6 +24,10 @@ struct MetricDelta {
     std::uint64_t dirty_refresh_requests = 0;
     std::uint64_t glyph_run_cache_hits = 0;
     std::uint64_t glyph_run_cache_misses = 0;
+    std::uint64_t glyph_run_cache_evictions = 0;
+    std::uint64_t glyph_run_cache_entries = 0;
+    std::uint64_t glyph_run_cache_bytes = 0;
+    std::uint64_t glyph_run_cache_peak_bytes = 0;
     std::uint64_t background_rectangles = 0;
     std::uint64_t glyph_bitmap_draws = 0;
     std::uint64_t glyph_text_draws = 0;
@@ -46,6 +50,10 @@ MetricDelta Difference(const WxPaintMetrics& before,
         after.dirty_refresh_requests - before.dirty_refresh_requests,
         after.glyph_run_cache_hits - before.glyph_run_cache_hits,
         after.glyph_run_cache_misses - before.glyph_run_cache_misses,
+        after.glyph_run_cache_evictions - before.glyph_run_cache_evictions,
+        after.glyph_run_cache_entries,
+        after.glyph_run_cache_bytes,
+        after.glyph_run_cache_peak_bytes,
         after.background_rectangles - before.background_rectangles,
         after.glyph_bitmap_draws - before.glyph_bitmap_draws,
         after.glyph_text_draws - before.glyph_text_draws,
@@ -73,6 +81,7 @@ enum class ScenarioKind {
     PartialAscii,
     PartialUnicode,
     PartialUnicodeUncached,
+    GlyphCacheChurn,
     BurstOutput,
     LargeScreen,
     Resize,
@@ -89,6 +98,7 @@ const char* ScenarioName(ScenarioKind kind)
     case ScenarioKind::PartialUnicode: return "partial-unicode";
     case ScenarioKind::PartialUnicodeUncached:
         return "partial-unicode-uncached";
+    case ScenarioKind::GlyphCacheChurn: return "glyph-cache-churn";
     case ScenarioKind::BurstOutput: return "burst-output";
     case ScenarioKind::LargeScreen: return "large-screen";
     case ScenarioKind::Resize: return "resize";
@@ -113,6 +123,8 @@ public:
                      "paint_time_us\tmax_paint_us\tfull_refreshes\t"
                      "dirty_refreshes\t"
                      "glyph_cache_hits\tglyph_cache_misses\t"
+                     "glyph_cache_evictions\tglyph_cache_entries\t"
+                     "glyph_cache_bytes\tglyph_cache_peak_bytes\t"
                      "background_rectangles\tglyph_bitmap_draws\t"
                      "glyph_text_draws\tdc_state_changes\n";
         const ScenarioKind scenarios[] = {
@@ -120,6 +132,7 @@ public:
             ScenarioKind::PartialAscii,
             ScenarioKind::PartialUnicode,
             ScenarioKind::PartialUnicodeUncached,
+            ScenarioKind::GlyphCacheChurn,
             ScenarioKind::BurstOutput,
             ScenarioKind::LargeScreen,
             ScenarioKind::Resize,
@@ -150,6 +163,10 @@ private:
         config.timer_interval_ms = 1000000;
         config.glyph_cache_enabled = kind !=
             ScenarioKind::PartialUnicodeUncached;
+        if (kind == ScenarioKind::GlyphCacheChurn) {
+            config.glyph_cache_max_bytes = 16 * 1024;
+            config.glyph_cache_max_entries = 128;
+        }
         auto* terminal = new WxTerminalCtrl(frame, nullptr, config, {});
         auto* sizer = new wxBoxSizer(wxVERTICAL);
         sizer->Add(terminal, 1, wxEXPAND);
@@ -163,7 +180,8 @@ private:
 
         SakuraTerminal* core = terminal->Core();
         const bool unicode = kind == ScenarioKind::PartialUnicode ||
-            kind == ScenarioKind::PartialUnicodeUncached;
+            kind == ScenarioKind::PartialUnicodeUncached ||
+            kind == ScenarioKind::GlyphCacheChurn;
         const unsigned int initial_rows = kind == ScenarioKind::LargeScreen
             ? 64 : 32;
         const std::string initial = MakeScreen(
@@ -198,6 +216,23 @@ private:
                 sakura_terminal_feed_output(core, update.data(), update.size());
                 break;
             }
+            case ScenarioKind::GlyphCacheChurn:
+                for (unsigned int chunk = 0; chunk < 8; ++chunk) {
+                    const unsigned int column = 1 + chunk * 9;
+                    const unsigned int foreground =
+                        16 + (iteration * 11 + chunk * 17) % 216;
+                    const unsigned int background =
+                        16 + (iteration * 7 + chunk * 23 + 37) % 216;
+                    const std::string update = "\033[1;" +
+                        std::to_string(column) + "H\033[38;5;" +
+                        std::to_string(foreground) + "m\033[48;5;" +
+                        std::to_string(background) + "mchurn-" +
+                        std::to_string(iteration) + '-' +
+                        std::to_string(chunk) + " 界é\033[0m";
+                    sakura_terminal_feed_output(core, update.data(),
+                                                update.size());
+                }
+                break;
             case ScenarioKind::BurstOutput:
                 for (unsigned int chunk = 0; chunk < 8; ++chunk) {
                     const std::string update = "\033[1;1Hburst-" +
@@ -254,6 +289,10 @@ private:
                   << metrics.dirty_refresh_requests << '\t'
                   << metrics.glyph_run_cache_hits << '\t'
                   << metrics.glyph_run_cache_misses << '\t'
+                  << metrics.glyph_run_cache_evictions << '\t'
+                  << metrics.glyph_run_cache_entries << '\t'
+                  << metrics.glyph_run_cache_bytes << '\t'
+                  << metrics.glyph_run_cache_peak_bytes << '\t'
                   << metrics.background_rectangles << '\t'
                   << metrics.glyph_bitmap_draws << '\t'
                   << metrics.glyph_text_draws << '\t'

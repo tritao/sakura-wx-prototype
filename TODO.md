@@ -45,6 +45,8 @@ cross-platform terminal library and a Sakura frontend foundation.
   large-screen, scrolling, and cached-versus-uncached renderer comparisons.
   - Report background rectangle batching, bitmap/text draw paths, DC state
     changes, and maximum per-frame paint time.
+- [x] Bound the wx glyph bitmap cache by entry count and estimated bitmap
+  memory, with LRU eviction and cache-churn benchmark coverage.
 
 ## Transport reliability and portability
 

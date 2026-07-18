@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iterator>
+#include <list>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -103,6 +105,12 @@ struct GlyphRunResource {
     wxSize measured_size;
 };
 
+struct GlyphRunCacheEntry {
+    GlyphRunResource resource;
+    std::size_t bytes = 0;
+    std::list<GlyphRunKey>::iterator lru;
+};
+
 } // namespace
 
 class WxTerminalCtrl::Impl {
@@ -140,6 +148,54 @@ public:
         assert(std::this_thread::get_id() == owner_thread_);
     }
 
+    using GlyphRunLru = std::list<GlyphRunKey>;
+    using GlyphRunCache = std::unordered_map<
+        GlyphRunKey, GlyphRunCacheEntry, GlyphRunKeyHash>;
+
+    static std::size_t BitmapBytes(const wxBitmap& bitmap)
+    {
+        if (!bitmap.IsOk())
+            return 0;
+        const std::size_t width = static_cast<std::size_t>(
+            std::max(0, bitmap.GetWidth()));
+        const std::size_t height = static_cast<std::size_t>(
+            std::max(0, bitmap.GetHeight()));
+        const std::size_t depth = static_cast<std::size_t>(
+            std::max(1, bitmap.GetDepth()));
+        return width * height * ((depth + 7) / 8);
+    }
+
+    void UpdateGlyphCacheMetrics()
+    {
+        paint_metrics_.glyph_run_cache_entries =
+            static_cast<uint64_t>(glyph_runs_.size());
+        paint_metrics_.glyph_run_cache_bytes =
+            static_cast<uint64_t>(glyph_run_cache_bytes_);
+    }
+
+    void ClearGlyphRunCache()
+    {
+        glyph_runs_.clear();
+        glyph_run_lru_.clear();
+        glyph_run_cache_bytes_ = 0;
+        UpdateGlyphCacheMetrics();
+    }
+
+    void EvictLeastRecentlyUsedGlyphRun()
+    {
+        if (glyph_run_lru_.empty())
+            return;
+        const auto lru = std::prev(glyph_run_lru_.end());
+        const auto cached = glyph_runs_.find(*lru);
+        if (cached != glyph_runs_.end()) {
+            glyph_run_cache_bytes_ -= cached->second.bytes;
+            glyph_runs_.erase(cached);
+        }
+        glyph_run_lru_.erase(lru);
+        ++paint_metrics_.glyph_run_cache_evictions;
+        UpdateGlyphCacheMetrics();
+    }
+
     struct ColorResources {
         wxColour color;
         wxBrush brush;
@@ -170,8 +226,10 @@ public:
     std::array<wxFont, 8> glyph_fonts_;
     std::array<bool, 8> glyph_fonts_valid_ {};
     std::unordered_map<std::string, wxString> glyph_texts_;
-    std::unordered_map<GlyphRunKey, GlyphRunResource, GlyphRunKeyHash>
-        glyph_runs_;
+    GlyphRunCache glyph_runs_;
+    GlyphRunLru glyph_run_lru_;
+    std::size_t glyph_run_cache_bytes_ = 0;
+    wxBitmap glyph_bitmap_scratch_;
     std::size_t glyph_font_identity_ = 0;
     std::unordered_map<uint32_t, ColorResources> color_resources_;
     wxBrush background_brush_;
@@ -390,7 +448,7 @@ void WxTerminalCtrl::UpdateGeometry()
     impl_->cell_height_ = std::max(impl_->cell_height_, 1);
     if (previous_cell_width != impl_->cell_width_ ||
         previous_cell_height != impl_->cell_height_) {
-        impl_->glyph_runs_.clear();
+        impl_->ClearGlyphRunCache();
         impl_->glyph_fonts_valid_.fill(false);
     }
 
@@ -486,14 +544,14 @@ const wxBitmap& WxTerminalCtrl::GlyphRunBitmap(
 
     const auto existing = impl_->glyph_runs_.find(key);
     if (existing != impl_->glyph_runs_.end()) {
+        impl_->glyph_run_lru_.splice(impl_->glyph_run_lru_.begin(),
+                                     impl_->glyph_run_lru_,
+                                     existing->second.lru);
         ++impl_->paint_metrics_.glyph_run_cache_hits;
-        return existing->second.bitmap;
+        return existing->second.resource.bitmap;
     }
 
     ++impl_->paint_metrics_.glyph_run_cache_misses;
-    constexpr std::size_t max_glyph_runs = 1024;
-    if (impl_->glyph_runs_.size() >= max_glyph_runs)
-        impl_->glyph_runs_.clear();
 
     const wxFont& font = GlyphFont(run.attributes);
     dc.SetFont(font);
@@ -518,11 +576,35 @@ const wxBitmap& WxTerminalCtrl::GlyphRunBitmap(
         glyph_dc.SelectObject(wxNullBitmap);
     }
 
-    auto inserted = impl_->glyph_runs_.emplace(std::move(key),
-                                                 GlyphRunResource {});
-    inserted.first->second.bitmap = bitmap;
-    inserted.first->second.measured_size = measured_size;
-    return inserted.first->second.bitmap;
+    const std::size_t bitmap_bytes = Impl::BitmapBytes(bitmap);
+    const bool cacheable = bitmap.IsOk() &&
+        impl_->config_.glyph_cache_max_entries > 0 &&
+        bitmap_bytes <= impl_->config_.glyph_cache_max_bytes;
+    if (!cacheable) {
+        impl_->glyph_bitmap_scratch_ = bitmap;
+        return impl_->glyph_bitmap_scratch_;
+    }
+
+    while (!impl_->glyph_run_lru_.empty() &&
+           (impl_->glyph_runs_.size() >=
+                impl_->config_.glyph_cache_max_entries ||
+            impl_->glyph_run_cache_bytes_ >
+                impl_->config_.glyph_cache_max_bytes - bitmap_bytes))
+        impl_->EvictLeastRecentlyUsedGlyphRun();
+
+    auto inserted = impl_->glyph_runs_.emplace(
+        std::move(key), GlyphRunCacheEntry {});
+    inserted.first->second.resource.bitmap = bitmap;
+    inserted.first->second.resource.measured_size = measured_size;
+    inserted.first->second.bytes = bitmap_bytes;
+    impl_->glyph_run_lru_.push_front(inserted.first->first);
+    inserted.first->second.lru = impl_->glyph_run_lru_.begin();
+    impl_->glyph_run_cache_bytes_ += bitmap_bytes;
+    impl_->paint_metrics_.glyph_run_cache_peak_bytes = std::max(
+        impl_->paint_metrics_.glyph_run_cache_peak_bytes,
+        static_cast<uint64_t>(impl_->glyph_run_cache_bytes_));
+    impl_->UpdateGlyphCacheMetrics();
+    return inserted.first->second.resource.bitmap;
 }
 
 void WxTerminalCtrl::RenderFrame(wxDC& dc,
@@ -1250,7 +1332,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          "mouse=%llu/%llu modes=%llu "
                          "paint=%llu full/%llu partial cells=%llu "
                          "paint-max=%lluus refresh=%llu/%llu dirty "
-                         "glyph-cache=%llu/%llu "
+                         "glyph-cache=%llu/%llu evictions=%llu bytes=%llu/%llu "
                          "transport-read=%lluB/%llu "
                          "queue-high-water=%llu resize=%llu\n",
                          static_cast<unsigned long long>(core_metrics.output_bytes),
@@ -1274,6 +1356,9 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          static_cast<unsigned long long>(impl_->paint_metrics_.dirty_refresh_requests),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_hits),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_misses),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_evictions),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_bytes),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_peak_bytes),
                          static_cast<unsigned long long>(transport_metrics.bytes_read),
                          static_cast<unsigned long long>(transport_metrics.read_events),
                          static_cast<unsigned long long>(transport_metrics.max_queued_bytes),
