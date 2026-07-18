@@ -48,7 +48,10 @@ control:
 
 ```cpp
 TerminalConfig config;
-config.font_size = 14;
+// The default follows the platform monospace family at 10 pt. To force a
+// particular face, set use_system_font to false and provide font_family.
+config.use_system_font = true;
+config.font_size = 10;
 config.start_transport = true;
 
 TerminalCallbacks callbacks;

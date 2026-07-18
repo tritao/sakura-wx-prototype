@@ -248,6 +248,14 @@ install(FILES
 )
 
 if(BUILD_TESTING)
+    add_executable(sakura_wx_font_test
+        tests/wx_font_test.cpp
+    )
+    target_link_libraries(sakura_wx_font_test PRIVATE
+        wx::core
+        Sakura::WxTerminal
+    )
+
     add_executable(sakura_terminal_core_test
         tests/terminal_core_test.cpp
     )
@@ -314,6 +322,14 @@ if(BUILD_TESTING)
     endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME wx_font
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/wx_smoke_test.sh"
+                    "$<TARGET_FILE:sakura_wx_font_test>"
+        )
+        set_tests_properties(wx_font PROPERTIES
+            TIMEOUT 10
+            ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
+        )
         add_test(NAME wx_smoke
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/wx_smoke_test.sh"
                     "$<TARGET_FILE:sakura-wx-prototype>"
@@ -350,6 +366,9 @@ if(BUILD_TESTING)
         sakura_enable_sanitizers(sakura-vt-replay)
         if(TARGET sakura_pty_stress_test)
             sakura_enable_sanitizers(sakura_pty_stress_test)
+        endif()
+        if(TARGET sakura_wx_font_test)
+            sakura_enable_sanitizers(sakura_wx_font_test)
         endif()
         sakura_enable_sanitizers(sakura_transport_smoke_test)
         sakura_enable_sanitizers(sakura_transport_lifecycle_test)

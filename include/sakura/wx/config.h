@@ -11,7 +11,10 @@
 
 struct TerminalConfig {
     std::string font_family = "DejaVu Sans Mono";
-    int font_size = 12;
+    int font_size = 10;
+    // Use wxWidgets' platform monospace family by default. Set this to false
+    // to honor font_family as an explicit face-name override.
+    bool use_system_font = true;
     std::array<uint8_t, 3> background {16, 18, 20};
     std::array<uint8_t, 3> error_foreground {240, 180, 90};
     unsigned int timer_interval_ms = 16;

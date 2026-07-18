@@ -35,6 +35,33 @@ uint32_t ColorKey(const std::array<uint8_t, 3>& color)
            static_cast<uint32_t>(color[2]);
 }
 
+std::string ToUtf8(const wxString& value)
+{
+    const auto utf8 = value.ToUTF8();
+    if (utf8.data() == nullptr)
+        return {};
+    return {utf8.data(), utf8.length()};
+}
+
+wxFont CreateTerminalFont(const TerminalConfig& config)
+{
+    const int point_size = std::max(1, config.font_size);
+    wxFontInfo info(point_size);
+    info.Family(wxFONTFAMILY_TELETYPE);
+    if (!config.use_system_font)
+        info.FaceName(wxString::FromUTF8(config.font_family.c_str()));
+
+    wxFont font(info);
+    if (font.IsOk())
+        return font;
+
+    // Keep a usable monospace fallback if an explicitly requested face is
+    // unavailable on the current platform.
+    wxFontInfo fallback(point_size);
+    fallback.Family(wxFONTFAMILY_TELETYPE);
+    return wxFont(fallback);
+}
+
 void ScrollFramebuffer(wxMemoryDC& dc, int delta, unsigned int columns,
                        unsigned int rows, int cell_width, int cell_height)
 {
@@ -330,13 +357,11 @@ WxTerminalCtrl::WxTerminalCtrl(
     Bind(wxEVT_MOTION, &WxTerminalCtrl::OnMotion, this);
     Bind(wxEVT_TIMER, &WxTerminalCtrl::OnTimer, this);
 
-    impl_->font_ = wxFont(std::max(1, impl_->config_.font_size),
-                          wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
-                          wxFONTWEIGHT_NORMAL, false,
-                          wxString::FromUTF8(impl_->config_.font_family.c_str()));
+    impl_->font_ = CreateTerminalFont(impl_->config_);
     impl_->glyph_font_identity_ = std::hash<std::string>{}(
-        impl_->config_.font_family) ^
-        (static_cast<std::size_t>(std::max(1, impl_->config_.font_size)) << 1);
+        impl_->font_.GetNativeFontInfoDesc().ToStdString()) ^
+        (std::hash<bool>{}(impl_->config_.use_system_font) << 1) ^
+        (static_cast<std::size_t>(std::max(1, impl_->config_.font_size)) << 2);
 
     if (!sakura_terminal_is_ready(impl_->core_)) {
         impl_->error_ = wxString::FromUTF8(sakura_terminal_error(impl_->core_));
@@ -390,6 +415,22 @@ const SakuraTerminal* WxTerminalCtrl::Core() const
 {
     impl_->AssertOwnerThread();
     return impl_->core_;
+}
+
+std::string WxTerminalCtrl::GetFontFamily() const
+{
+    impl_->AssertOwnerThread();
+    const std::string family = ToUtf8(impl_->font_.GetFaceName());
+    if (!family.empty())
+        return family;
+    return impl_->config_.use_system_font ? "system monospace"
+                                          : impl_->config_.font_family;
+}
+
+int WxTerminalCtrl::GetFontSize() const
+{
+    impl_->AssertOwnerThread();
+    return impl_->font_.GetPointSize();
 }
 
 void WxTerminalCtrl::RefreshFrame()

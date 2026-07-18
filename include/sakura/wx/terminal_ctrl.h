@@ -20,6 +20,10 @@ public:
 
     SakuraTerminal* Core();
     const SakuraTerminal* Core() const;
+    // Returns the resolved wx face name, or a descriptive fallback when the
+    // platform keeps the generic monospace family unresolved.
+    std::string GetFontFamily() const;
+    int GetFontSize() const;
     // Capture the latest core frame and schedule the smallest appropriate wx
     // invalidation. Hosts that mutate Core() directly should call this after
     // feeding output or changing terminal state.
