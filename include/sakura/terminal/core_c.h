@@ -8,10 +8,11 @@
 extern "C" {
 #endif
 
-#define SAKURA_TERMINAL_CORE_ABI_VERSION 4u
+#define SAKURA_TERMINAL_CORE_ABI_VERSION 5u
 #define SAKURA_TERMINAL_INVALID UINT32_MAX
 /* A renderer may request a different span bound through the frame API. */
 #define SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS 32u
+#define SAKURA_TERMINAL_THEME_ANSI_COLORS 16u
 
 typedef struct SakuraTerminal SakuraTerminal;
 typedef struct SakuraTerminalFrame SakuraTerminalFrame;
@@ -19,6 +20,16 @@ typedef struct SakuraTerminalFrame SakuraTerminalFrame;
 typedef void (*SakuraTerminalWriteCallback)(void *userdata,
                                              const char *data,
                                              size_t length);
+
+/* Toolkit-neutral terminal colors. The ANSI entries are indexed in the
+ * standard order (black, red, green, yellow, blue, magenta, cyan, white,
+ * followed by their bright variants). Foreground/background are the implicit
+ * colors used by cells without an explicit SGR color. */
+typedef struct SakuraTerminalTheme {
+    uint8_t ansi[SAKURA_TERMINAL_THEME_ANSI_COLORS][3];
+    uint8_t foreground[3];
+    uint8_t background[3];
+} SakuraTerminalTheme;
 
 typedef enum SakuraTerminalCursorStyle {
     SAKURA_TERMINAL_CURSOR_BLOCK = 0,
@@ -144,8 +155,15 @@ typedef struct SakuraTerminalMetrics {
  * owns the terminal and must release every returned frame. Frame cell text is
  * borrowed and remains valid until its frame is released.
  */
+/* Populate a theme with the library default palette and implicit colors. */
+void sakura_terminal_theme_default(SakuraTerminalTheme *theme);
+
+/* The legacy constructor uses the library default theme. */
 SakuraTerminal *sakura_terminal_new(SakuraTerminalWriteCallback callback,
                                      void *userdata);
+SakuraTerminal *sakura_terminal_new_with_theme(
+    SakuraTerminalWriteCallback callback, void *userdata,
+    const SakuraTerminalTheme *theme);
 void sakura_terminal_free(SakuraTerminal *terminal);
 void sakura_terminal_rebind_owner_thread(SakuraTerminal *terminal);
 

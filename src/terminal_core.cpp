@@ -33,6 +33,27 @@ struct PackedStyle {
     uint8_t attributes = 0;
 };
 
+static SakuraTerminalTheme DefaultTerminalTheme()
+{
+    SakuraTerminalTheme theme {};
+    const uint8_t base16_dark[SAKURA_TERMINAL_THEME_ANSI_COLORS][3] = {
+        {0x00, 0x00, 0x00}, {0xab, 0x46, 0x42}, {0xa1, 0xb5, 0x6c},
+        {0xf7, 0xca, 0x88}, {0x7c, 0xaf, 0xc2}, {0xba, 0x8b, 0xaf},
+        {0x86, 0xc1, 0xb9}, {0xaa, 0xaa, 0xaa}, {0x55, 0x55, 0x55},
+        {0xab, 0x46, 0x42}, {0xa1, 0xb5, 0x6c}, {0xf7, 0xca, 0x88},
+        {0x7c, 0xaf, 0xc2}, {0xba, 0x8b, 0xaf}, {0x86, 0xc1, 0xb9},
+        {0xff, 0xff, 0xff},
+    };
+    std::memcpy(theme.ansi, base16_dark, sizeof(base16_dark));
+    theme.foreground[0] = 0xd8;
+    theme.foreground[1] = 0xd8;
+    theme.foreground[2] = 0xd8;
+    theme.background[0] = 0x18;
+    theme.background[1] = 0x18;
+    theme.background[2] = 0x18;
+    return theme;
+}
+
 struct PackedRun {
     unsigned int left = 0;
     unsigned int cell_count = 0;
@@ -76,7 +97,8 @@ class TerminalBackend final {
 public:
     using WriteCallback = std::function<void(const char*, std::size_t)>;
 
-    explicit TerminalBackend(WriteCallback write_callback);
+    explicit TerminalBackend(WriteCallback write_callback,
+                             const SakuraTerminalTheme& theme);
     ~TerminalBackend();
 
     TerminalBackend(const TerminalBackend&) = delete;
@@ -118,7 +140,8 @@ private:
 
 class TerminalBackend::Impl {
 public:
-    explicit Impl(TerminalBackend::WriteCallback write_callback)
+    explicit Impl(TerminalBackend::WriteCallback write_callback,
+                  const SakuraTerminalTheme& theme)
         : write_callback_(std::move(write_callback))
     {
         if (tsm_screen_new(&screen_, nullptr, nullptr) != 0) {
@@ -137,7 +160,14 @@ public:
 
         tsm_vte_set_mouse_cb(vte_, &Impl::VteMouse, this);
         tsm_vte_set_osc_cb(vte_, &Impl::VteOsc, this);
-        tsm_vte_set_palette(vte_, "base16-dark");
+        if (ConfigurePalette(theme) != 0) {
+            error_ = "libtsm could not configure the terminal palette";
+            tsm_vte_unref(vte_);
+            tsm_screen_unref(screen_);
+            vte_ = nullptr;
+            screen_ = nullptr;
+            return;
+        }
         ResetScreenObservation();
     }
 
@@ -182,6 +212,20 @@ public:
     }
 
 private:
+    int ConfigurePalette(const SakuraTerminalTheme& theme)
+    {
+        uint8_t palette[TSM_COLOR_NUM][3] {};
+        for (unsigned int index = 0;
+             index < SAKURA_TERMINAL_THEME_ANSI_COLORS; ++index)
+            std::memcpy(palette[index], theme.ansi[index], 3);
+        std::memcpy(palette[TSM_COLOR_FOREGROUND], theme.foreground, 3);
+        std::memcpy(palette[TSM_COLOR_BACKGROUND], theme.background, 3);
+        int result = tsm_vte_set_custom_palette(vte_, palette);
+        if (result == 0)
+            result = tsm_vte_set_palette(vte_, "custom");
+        return result;
+    }
+
     struct PackedChangedCell {
         unsigned int column = 0;
         unsigned int row = 0;
@@ -918,8 +962,9 @@ private:
     friend class TerminalBackend;
 };
 
-TerminalBackend::TerminalBackend(WriteCallback write_callback)
-    : impl_(std::make_unique<Impl>(std::move(write_callback)))
+TerminalBackend::TerminalBackend(WriteCallback write_callback,
+                                 const SakuraTerminalTheme& theme)
+    : impl_(std::make_unique<Impl>(std::move(write_callback), theme))
 {
 }
 
@@ -1187,7 +1232,7 @@ struct SakuraTerminal {
     std::unique_ptr<TerminalBackend> backend;
 
     SakuraTerminal(SakuraTerminalWriteCallback callback_value,
-                   void* userdata_value)
+                   void* userdata_value, const SakuraTerminalTheme& theme)
         : callback(callback_value), userdata(userdata_value),
           backend(std::make_unique<TerminalBackend>(
               [this](const char* data, std::size_t length) {
@@ -1198,7 +1243,7 @@ struct SakuraTerminal {
                           // Exceptions must never cross the C ABI boundary.
                       }
                   }
-              }))
+              }, theme))
     {
     }
 };
@@ -1310,11 +1355,26 @@ static std::size_t PackedRunSpanCount(const PackedRow& row,
 
 extern "C" {
 
+void sakura_terminal_theme_default(SakuraTerminalTheme* theme)
+{
+    if (theme != nullptr)
+        *theme = DefaultTerminalTheme();
+}
+
 SakuraTerminal* sakura_terminal_new(SakuraTerminalWriteCallback callback,
                                      void* userdata)
 {
+    return sakura_terminal_new_with_theme(callback, userdata, nullptr);
+}
+
+SakuraTerminal* sakura_terminal_new_with_theme(
+    SakuraTerminalWriteCallback callback, void* userdata,
+    const SakuraTerminalTheme* theme)
+{
     try {
-        return new SakuraTerminal(callback, userdata);
+        const SakuraTerminalTheme resolved_theme = theme == nullptr
+            ? DefaultTerminalTheme() : *theme;
+        return new SakuraTerminal(callback, userdata, resolved_theme);
     } catch (...) {
         return nullptr;
     }

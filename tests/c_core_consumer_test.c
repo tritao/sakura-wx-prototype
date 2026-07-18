@@ -31,6 +31,54 @@ int main(void)
         return 1;
     }
 
+    SakuraTerminalTheme theme;
+    sakura_terminal_theme_default(&theme);
+    theme.background[0] = 11;
+    theme.background[1] = 22;
+    theme.background[2] = 33;
+    SakuraTerminal *themed = sakura_terminal_new_with_theme(
+        NULL, NULL, &theme);
+    if (!check(themed != NULL && sakura_terminal_resize(themed, 4, 1),
+               "themed C API terminal setup failed")) {
+        sakura_terminal_free(themed);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    SakuraTerminalFrame *themed_frame = sakura_terminal_take_frame(themed);
+    SakuraTerminalCellView themed_cell;
+    if (!check(themed_frame != NULL &&
+                   sakura_terminal_frame_cell(themed_frame, 1, 0,
+                                              &themed_cell) &&
+                   themed_cell.background[0] == 11 &&
+                   themed_cell.background[1] == 22 &&
+                   themed_cell.background[2] == 33,
+               "themed C API background was not applied to blank cells")) {
+        sakura_terminal_frame_free(themed_frame);
+        sakura_terminal_free(themed);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    sakura_terminal_frame_free(themed_frame);
+
+    const char explicit_background[] = "\033[48;2;24;24;24mX";
+    sakura_terminal_feed_output(themed, explicit_background,
+                                sizeof(explicit_background) - 1);
+    themed_frame = sakura_terminal_take_frame(themed);
+    if (!check(themed_frame != NULL &&
+                   sakura_terminal_frame_cell(themed_frame, 0, 0,
+                                              &themed_cell) &&
+                   themed_cell.background[0] == 24 &&
+                   themed_cell.background[1] == 24 &&
+                   themed_cell.background[2] == 24,
+               "explicit #181818 background was confused with the default")) {
+        sakura_terminal_frame_free(themed_frame);
+        sakura_terminal_free(themed);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    sakura_terminal_frame_free(themed_frame);
+    sakura_terminal_free(themed);
+
     SakuraTerminalFrame *frame = sakura_terminal_take_frame(terminal);
     SakuraTerminalFrameInfo info;
     if (!check(frame != NULL && sakura_terminal_frame_info(frame, &info),
