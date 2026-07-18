@@ -2,8 +2,6 @@
 
 #include <tsm/libtsm.h>
 
-#include "tsm_scroll_observer.h"
-
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -169,9 +167,9 @@ public:
     void FeedOutput(const char* data, std::size_t length)
     {
         if (vte_ != nullptr && data != nullptr && length > 0) {
-            if (observed_lines_.size() != sakura_tsm_screen_height(screen_))
+            if (observed_lines_.size() != tsm_screen_get_height(screen_))
                 ResetScreenObservation();
-            const std::vector<std::uintptr_t> previous_lines = observed_lines_;
+            const std::vector<uint64_t> previous_lines = observed_lines_;
             const bool previous_alternate = observed_alternate_screen_;
             metrics_.output_bytes += length;
             ++metrics_.output_chunks;
@@ -217,19 +215,19 @@ private:
         observed_lines_.clear();
         if (screen_ == nullptr)
             return;
-        const unsigned int height = sakura_tsm_screen_height(screen_);
+        const unsigned int height = tsm_screen_get_height(screen_);
         observed_lines_.resize(height);
         for (unsigned int row = 0; row < height; ++row)
-            observed_lines_[row] = reinterpret_cast<std::uintptr_t>(
-                sakura_tsm_screen_line(screen_, row));
-        observed_alternate_screen_ = sakura_tsm_screen_is_alternate(screen_) != 0;
+            observed_lines_[row] = tsm_screen_get_row_id(screen_, row);
+        observed_alternate_screen_ = (tsm_screen_get_flags(screen_) &
+                                      TSM_SCREEN_ALTERNATE) != 0;
     }
 
     static int DetectFullScreenShift(
-        const std::vector<std::uintptr_t>& previous_lines,
-        const struct tsm_screen* screen)
+        const std::vector<uint64_t>& previous_lines,
+        struct tsm_screen* screen)
     {
-        const unsigned int height = sakura_tsm_screen_height(screen);
+        const unsigned int height = tsm_screen_get_height(screen);
         if (screen == nullptr || previous_lines.size() != height || height < 2)
             return 0;
 
@@ -237,12 +235,10 @@ private:
             bool moved_up = true;
             bool moved_down = true;
             for (unsigned int row = 0; row < height - delta; ++row) {
-                if (reinterpret_cast<std::uintptr_t>(
-                        sakura_tsm_screen_line(screen, row)) !=
+                if (tsm_screen_get_row_id(screen, row) !=
                     previous_lines[row + delta])
                     moved_up = false;
-                if (reinterpret_cast<std::uintptr_t>(
-                        sakura_tsm_screen_line(screen, row + delta)) !=
+                if (tsm_screen_get_row_id(screen, row + delta) !=
                     previous_lines[row])
                     moved_down = false;
                 if (!moved_up && !moved_down)
@@ -257,13 +253,16 @@ private:
     }
 
     void ObserveScreenScroll(
-        const std::vector<std::uintptr_t>& previous_lines,
+        const std::vector<uint64_t>& previous_lines,
         bool previous_alternate)
     {
         const bool alternate = screen_ != nullptr &&
-            sakura_tsm_screen_is_alternate(screen_) != 0;
+            (tsm_screen_get_flags(screen_) & TSM_SCREEN_ALTERNATE) != 0;
+        const bool scrollback = screen_ != nullptr &&
+            tsm_screen_sb_get_line_pos(screen_) <
+                tsm_screen_sb_get_line_count(screen_);
         if (screen_ != nullptr && previous_alternate == alternate &&
-            !sakura_tsm_screen_is_scrollback(screen_)) {
+            !scrollback) {
             const int delta = DetectFullScreenShift(previous_lines, screen_);
             if (delta != 0)
                 pending_content_scroll_delta_ += delta;
@@ -783,7 +782,8 @@ private:
 
         const bool reuse_scrolled_rows = !frame->full_repaint &&
             content_scroll_delta != 0 && viewport_scroll_delta == 0 &&
-            !sakura_tsm_screen_is_scrollback(screen_) &&
+            tsm_screen_sb_get_line_pos(screen_) >=
+                tsm_screen_sb_get_line_count(screen_) &&
             std::abs(content_scroll_delta) < static_cast<int>(rows);
         if (content_scroll_delta != 0 && !reuse_scrolled_rows)
             frame->full_repaint = true;
@@ -898,7 +898,7 @@ private:
     std::chrono::steady_clock::time_point last_output_time_;
     bool output_waiting_for_render_ = false;
     std::thread::id owner_thread_ = std::this_thread::get_id();
-    std::vector<std::uintptr_t> observed_lines_;
+    std::vector<uint64_t> observed_lines_;
     bool observed_alternate_screen_ = false;
     int pending_content_scroll_delta_ = 0;
     int pending_viewport_scroll_delta_ = 0;

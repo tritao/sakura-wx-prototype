@@ -62,7 +62,6 @@ target_compile_features(sakura_libtsm PRIVATE c_std_99)
 
 add_library(sakura_terminal_core STATIC
     src/terminal_core.cpp
-    src/tsm_scroll_observer.c
 )
 set_target_properties(sakura_terminal_core PROPERTIES EXPORT_NAME TerminalCoreC)
 target_include_directories(sakura_terminal_core
@@ -306,6 +305,14 @@ if(BUILD_TESTING)
     )
     add_test(NAME c_core_consumer COMMAND sakura_c_core_consumer_test)
 
+    add_executable(sakura_tsm_public_api_test
+        tests/tsm_public_api_test.c
+    )
+    target_link_libraries(sakura_tsm_public_api_test PRIVATE
+        sakura_libtsm
+    )
+    add_test(NAME tsm_public_api COMMAND sakura_tsm_public_api_test)
+
     add_executable(sakura_transport_smoke_test
         tests/transport_smoke_test.cpp
     )
@@ -379,6 +386,7 @@ if(BUILD_TESTING)
 
     if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
         sakura_enable_sanitizers(sakura_terminal_core_test)
+        sakura_enable_sanitizers(sakura_tsm_public_api_test)
         sakura_enable_sanitizers(sakura-vt-replay)
         if(TARGET sakura_pty_stress_test)
             sakura_enable_sanitizers(sakura_pty_stress_test)
