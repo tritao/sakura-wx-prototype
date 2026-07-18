@@ -1,6 +1,6 @@
 #pragma once
 
-#include <sakura/terminal/core.h>
+#include <sakura/terminal/core_c.h>
 #include <sakura/terminal/transport.h>
 
 #include <array>
@@ -38,5 +38,5 @@ struct TerminalCallbacks {
     std::function<void(const std::string&)> on_title_changed;
     std::function<void(const TransportStatus&)> on_transport_status_changed;
     std::function<void(const std::string&)> on_error;
-    std::function<void(const TerminalMetrics&, const TransportMetrics&)> on_metrics;
+    std::function<void(const SakuraTerminalMetrics&, const TransportMetrics&)> on_metrics;
 };

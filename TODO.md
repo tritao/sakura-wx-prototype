@@ -6,7 +6,7 @@ cross-platform terminal library and a Sakura frontend foundation.
 ## Terminal correctness and test infrastructure
 
 - [x] Build a deterministic VT replay harness for recorded terminal sessions.
-  - Feed captured byte streams into `TerminalCore`.
+  - Feed captured byte streams through `SakuraTerminal`'s C ABI.
   - Record snapshots, cursor state, selection output, titles, and metrics.
   - Support deterministic regression fixtures and replay failures.
 
@@ -53,7 +53,7 @@ cross-platform terminal library and a Sakura frontend foundation.
     is temporarily disabled in CI; see [`TODO-WINDOWS.md`](TODO-WINDOWS.md).
 
 - [x] Define thread-safety and ownership rules.
-  - Document which `TerminalCore` methods are UI-thread-only.
+  - Document which `SakuraTerminal` C ABI calls are UI-thread-only.
   - Specify transport worker-thread and output-queue ownership.
   - Define callback thread, lifetime, reentrancy, and shutdown guarantees.
   - Add debug thread-affinity assertions and validate the contract with

@@ -63,19 +63,13 @@ target_compile_features(sakura_libtsm PRIVATE c_std_99)
 add_library(sakura_terminal_core STATIC
     src/terminal_core.cpp
 )
-set_target_properties(sakura_terminal_core PROPERTIES EXPORT_NAME TerminalCore)
+set_target_properties(sakura_terminal_core PROPERTIES EXPORT_NAME TerminalCoreC)
 target_include_directories(sakura_terminal_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(sakura_terminal_core PUBLIC sakura_libtsm)
-
-# The implementation is shared with the C++ convenience API, while this
-# interface target gives C consumers an explicit package target name.
-add_library(sakura_terminal_core_c INTERFACE)
-set_target_properties(sakura_terminal_core_c PROPERTIES EXPORT_NAME TerminalCoreC)
-target_link_libraries(sakura_terminal_core_c INTERFACE sakura_terminal_core)
 
 add_library(sakura_transport STATIC
     src/conpty_session.cpp
@@ -112,8 +106,7 @@ target_link_libraries(sakura_wx_terminal
         $<BUILD_INTERFACE:wx::core>
 )
 
-add_library(Sakura::TerminalCore ALIAS sakura_terminal_core)
-add_library(Sakura::TerminalCoreC ALIAS sakura_terminal_core_c)
+add_library(Sakura::TerminalCoreC ALIAS sakura_terminal_core)
 add_library(Sakura::TerminalTransport ALIAS sakura_transport)
 add_library(Sakura::WxTerminal ALIAS sakura_wx_terminal)
 
@@ -202,7 +195,7 @@ if(SAKURA_ENABLE_SANITIZERS AND NOT MSVC)
     sakura_enable_sanitizers(sakura-wx-prototype)
 endif()
 
-install(TARGETS sakura_libtsm sakura_terminal_core sakura_terminal_core_c sakura_transport
+install(TARGETS sakura_libtsm sakura_terminal_core sakura_transport
                 sakura_wx_terminal
     EXPORT SakuraTerminalTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

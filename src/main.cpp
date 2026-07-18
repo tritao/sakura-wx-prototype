@@ -19,12 +19,12 @@ bool RunScenario(WxTerminalCtrl& terminal)
         std::fprintf(stderr, "wx scenario failed: %s\n", reason);
         return false;
     };
-    TerminalCore& core = terminal.Core();
-    if (!core.IsReady())
+    SakuraTerminal* core = terminal.Core();
+    if (!sakura_terminal_is_ready(core))
         return fail("core not ready");
 
     const char* text = "\x1b[2J\x1b[Hscenario";
-    core.FeedOutput(text, std::strlen(text));
+    sakura_terminal_feed_output(core, text, std::strlen(text));
     terminal.RefreshFrame();
     wxYield();
     terminal.Update();
@@ -35,7 +35,7 @@ bool RunScenario(WxTerminalCtrl& terminal)
         return fail("initial full paint metrics");
 
     const char* update = "\x1b[2;1Hdelta";
-    core.FeedOutput(update, std::strlen(update));
+    sakura_terminal_feed_output(core, update, std::strlen(update));
     terminal.RefreshFrame();
     wxYield();
     terminal.Update();
@@ -46,15 +46,20 @@ bool RunScenario(WxTerminalCtrl& terminal)
             initial_paint.painted_cells)
         return fail("incremental paint metrics");
 
-    core.StartSelection(0, 0);
-    core.UpdateSelection(7, 0);
+    sakura_terminal_start_selection(core, 0, 0);
+    sakura_terminal_update_selection(core, 7, 0);
     terminal.RefreshFrame();
     wxYield();
     terminal.Update();
-    if (core.CopySelection().find("scenario") == std::string::npos)
+    char* initial_copy = sakura_terminal_copy_selection(core);
+    const std::string initial_text = initial_copy == nullptr ? "" : initial_copy;
+    sakura_terminal_free_string(initial_copy);
+    if (initial_text.find("scenario") == std::string::npos)
         return fail("initial selection copy");
-    core.UpdateSelection(9, 0);
-    const std::string copied = core.CopySelection();
+    sakura_terminal_update_selection(core, 9, 0);
+    char* copied_value = sakura_terminal_copy_selection(core);
+    const std::string copied = copied_value == nullptr ? "" : copied_value;
+    sakura_terminal_free_string(copied_value);
     if (copied.find("scenario") == std::string::npos)
         return fail("extended selection copy");
 
@@ -77,9 +82,10 @@ bool RunScenario(WxTerminalCtrl& terminal)
     const auto utf8 = pasted_text.ToUTF8();
     if (utf8.data() == nullptr)
         return fail("clipboard UTF-8 conversion");
-    core.Paste(std::string(utf8.data(), utf8.length()));
+    sakura_terminal_paste(core, utf8.data(), utf8.length());
 
-    const TerminalMetrics metrics = core.GetMetrics();
+    SakuraTerminalMetrics metrics {};
+    sakura_terminal_get_metrics(core, &metrics);
     return metrics.selection_copies >= 2 && metrics.paste_bytes >= 8;
 }
 

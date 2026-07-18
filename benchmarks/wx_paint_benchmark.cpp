@@ -120,11 +120,11 @@ private:
         frame->Show();
         wxYield();
 
-        TerminalCore& core = terminal->Core();
+        SakuraTerminal* core = terminal->Core();
         const bool unicode = kind == ScenarioKind::PartialUnicode;
         const std::string initial = MakeScreen("benchmark", unicode);
-        core.FeedOutput("\033[2J\033[H", 7);
-        core.FeedOutput(initial.data(), initial.size());
+        sakura_terminal_feed_output(core, "\033[2J\033[H", 7);
+        sakura_terminal_feed_output(core, initial.data(), initial.size());
         PumpPaint(*terminal);
 
         const WxPaintMetrics before = terminal->GetPaintMetrics();
@@ -134,28 +134,28 @@ private:
             case ScenarioKind::FullAscii: {
                 const std::string update = "\033[2J\033[H" +
                     MakeScreen("full", false);
-                core.FeedOutput(update.data(), update.size());
+                sakura_terminal_feed_output(core, update.data(), update.size());
                 break;
             }
             case ScenarioKind::PartialAscii: {
                 const std::string update = "\033[1;1Hdelta-0123456789";
-                core.FeedOutput(update.data(), update.size());
+                sakura_terminal_feed_output(core, update.data(), update.size());
                 break;
             }
             case ScenarioKind::PartialUnicode: {
                 const std::string update = "\033[2;1H界é";
-                core.FeedOutput(update.data(), update.size());
+                sakura_terminal_feed_output(core, update.data(), update.size());
                 break;
             }
             case ScenarioKind::Cursor: {
                 const unsigned int row = iteration % 20 + 1;
                 const std::string cursor = "\033[" + std::to_string(row) + ";1H";
-                core.FeedOutput(cursor.data(), cursor.size());
+                sakura_terminal_feed_output(core, cursor.data(), cursor.size());
                 break;
             }
             case ScenarioKind::Selection:
-                core.StartSelection(0, 0);
-                core.UpdateSelection(3 + iteration % 20, 0);
+                sakura_terminal_start_selection(core, 0, 0);
+                sakura_terminal_update_selection(core, 3 + iteration % 20, 0);
                 break;
             }
             PumpPaint(*terminal);

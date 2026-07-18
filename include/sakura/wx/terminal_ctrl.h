@@ -18,8 +18,8 @@ public:
                             TerminalCallbacks callbacks = {});
     ~WxTerminalCtrl() override;
 
-    TerminalCore& Core();
-    const TerminalCore& Core() const;
+    SakuraTerminal* Core();
+    const SakuraTerminal* Core() const;
     // Capture the latest core frame and schedule the smallest appropriate wx
     // invalidation. Hosts that mutate Core() directly should call this after
     // feeding output or changing terminal state.
@@ -31,9 +31,10 @@ private:
     void UpdateGeometry();
     static uint32_t KeySymFor(const wxKeyEvent& event);
     const wxFont& GlyphFont(uint8_t attributes);
-    const wxString& GlyphText(const std::string& text);
-    void RenderSnapshot(wxDC& dc, const TerminalSnapshot& snapshot,
-                        const TerminalDirtyRegion& dirty,
+    const wxString& GlyphText(const char* text, std::size_t length);
+    void RenderFrame(wxDC& dc, const SakuraTerminalFrame* frame,
+                     const SakuraTerminalFrameInfo& info,
+                     const SakuraTerminalDirtyRegion& dirty,
                         uint64_t* painted_cells);
     void OnPaint(wxPaintEvent& event);
     void OnSize(wxSizeEvent& event);

@@ -1,5 +1,5 @@
 #include <sakura/terminal/factory.h>
-#include <sakura/terminal/core.h>
+#include <sakura/terminal/core_c.h>
 #include <sakura/wx/terminal_ctrl.h>
 
 #include <stdexcept>
@@ -12,8 +12,12 @@ int main()
     if (config.font_size <= 0 || !callbacks.on_error)
         return 1;
 
-    TerminalCore core(nullptr);
-    if (!core.IsReady())
+    SakuraTerminal* core = sakura_terminal_new(nullptr, nullptr);
+    if (!sakura_terminal_is_ready(core)) {
+        sakura_terminal_free(core);
         throw std::runtime_error("installed-style terminal core was not ready");
-    return CreateTerminalTransport() == nullptr ? 1 : 0;
+    }
+    const int result = CreateTerminalTransport() == nullptr ? 1 : 0;
+    sakura_terminal_free(core);
+    return result;
 }

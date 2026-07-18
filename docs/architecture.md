@@ -4,15 +4,15 @@ This document defines the concurrency boundary for the reusable terminal
 library. It is intentionally conservative: the UI owns orchestration, while
 transport reader threads only move process output into a queue.
 
-## `TerminalCore`
+## `SakuraTerminal`
 
-`TerminalCore` is single-thread-affine.
+`SakuraTerminal` is single-thread-affine.
 
-- Construct it and call all methods from one thread.
+- Create it and call all API functions from one thread.
 - Do not call `FeedOutput`, input, selection, scrolling, snapshot, or metrics
   methods concurrently.
 - The write callback is synchronous and runs on the calling thread.
-- The write callback must not call back into the same `TerminalCore`.
+- The write callback must not call back into the same `SakuraTerminal`.
 - The callback may hand bytes to a thread-safe transport, but it must not
   retain the callback data pointer after it returns.
 - Move construction/assignment transfers the core to the destination object's
@@ -20,15 +20,14 @@ transport reader threads only move process output into a queue.
 
 The public C ABI is defined in
 `include/sakura/terminal/core_c.h`. It is the toolkit-neutral boundary for
-frontends that cannot or should not depend on the C++ API. `SakuraTerminal`
+frontends that need a toolkit-neutral terminal boundary. `SakuraTerminal`
 and `SakuraTerminalFrame` are opaque, caller-owned handles. A frame owns an
 immutable view of the rendered screen; cell text is borrowed from that frame
 and must not be retained after `sakura_terminal_frame_free()`.
 
 `SakuraTerminalFrameInfo` exposes the complete frame metadata and the frame
-also exposes coalesced row-local dirty spans. The existing C++ snapshot API is
-kept as a compatibility convenience for wxWidgets and tests, but forwards
-through the same C ABI boundary. Native frontends can request cached UTF-8
+also exposes coalesced row-local dirty spans. Native frontends can request
+cached UTF-8
 row runs with packed style identifiers and resolved RGB attributes, avoiding
 per-cell language-boundary calls. Run text is borrowed until the frame is
 released.

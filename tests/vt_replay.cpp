@@ -1,4 +1,4 @@
-#include <sakura/terminal/core.h>
+#include "test_terminal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -75,15 +75,15 @@ uint32_t ParseHexNumber(const std::string& token, const char* what)
     return static_cast<uint32_t>(value);
 }
 
-TerminalCursorStyle ParseCursorStyle(const std::string& token)
+SakuraTerminalCursorStyle ParseCursorStyle(const std::string& token)
 {
-    if (token == "block") return TerminalCursorStyle::Block;
-    if (token == "underline") return TerminalCursorStyle::Underline;
-    if (token == "bar") return TerminalCursorStyle::Bar;
+    if (token == "block") return SAKURA_TERMINAL_CURSOR_BLOCK;
+    if (token == "underline") return SAKURA_TERMINAL_CURSOR_UNDERLINE;
+    if (token == "bar") return SAKURA_TERMINAL_CURSOR_BAR;
     throw std::runtime_error("invalid cursor style");
 }
 
-const TerminalCell& CellAt(const TerminalSnapshot& snapshot,
+const TestCell& CellAt(const TestSnapshot& snapshot,
                            unsigned int column, unsigned int row)
 {
     if (column >= snapshot.columns || row >= snapshot.rows)
@@ -184,7 +184,7 @@ private:
             std::string bottom;
             command >> generation >> changed >> full_repaint >> left >> top
                     >> right >> bottom;
-            const TerminalFrame frame = core_.TakeFrame();
+            const TestFrame frame = core_.TakeFrame();
             const auto expected_generation =
                 static_cast<uint64_t>(ParseDecimal(generation,
                                                     "frame generation"));
@@ -192,7 +192,7 @@ private:
                 ParseDecimal(changed, "frame changed") != 0;
             const bool expected_full_repaint =
                 ParseDecimal(full_repaint, "frame full repaint") != 0;
-            const TerminalDirtyRegion expected_dirty {
+            const TestDirtyRegion expected_dirty {
                 ParseDecimal(left, "dirty left"),
                 ParseDecimal(top, "dirty top"),
                 ParseDecimal(right, "dirty right"),
@@ -226,8 +226,8 @@ private:
             std::string expected_text;
             if (encoded_text.empty() || !DecodeHex(encoded_text, expected_text))
                 throw std::runtime_error("invalid cell text hexadecimal payload");
-            const TerminalSnapshot snapshot = core_.TakeSnapshot();
-            const TerminalCell& cell = CellAt(
+            const TestSnapshot snapshot = core_.TakeSnapshot();
+            const TestCell& cell = CellAt(
                 snapshot, ParseDecimal(column, "cell column"),
                 ParseDecimal(row, "cell row"));
             const uint32_t expected_codepoint = ParseHexNumber(
@@ -249,7 +249,7 @@ private:
             std::string row;
             std::string style;
             command >> column >> row >> style;
-            const TerminalSnapshot snapshot = core_.TakeSnapshot();
+            const TestSnapshot snapshot = core_.TakeSnapshot();
             if (snapshot.cursor_x != ParseDecimal(column, "cursor column") ||
                 snapshot.cursor_y != ParseDecimal(row, "cursor row") ||
                 snapshot.cursor_style != ParseCursorStyle(style))
@@ -286,7 +286,7 @@ private:
             std::string value;
             command >> name >> value;
             const uint64_t expected = ParseDecimal(value, "metric value");
-            const TerminalMetrics metrics = core_.GetMetrics();
+            const SakuraTerminalMetrics metrics = core_.GetMetrics();
             uint64_t actual = 0;
             if (name == "output_bytes") actual = metrics.output_bytes;
             else if (name == "output_chunks") actual = metrics.output_chunks;
@@ -306,7 +306,7 @@ private:
     }
 
     std::string writes_;
-    TerminalCore core_;
+    TestTerminal core_;
 };
 
 } // namespace

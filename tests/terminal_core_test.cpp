@@ -1,4 +1,4 @@
-#include <sakura/terminal/core.h>
+#include "test_terminal.h"
 
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -18,7 +18,7 @@ void Check(bool condition, const char* message)
         throw std::runtime_error(message);
 }
 
-const TerminalCell& CellAt(const TerminalSnapshot& snapshot,
+const TestCell& CellAt(const TestSnapshot& snapshot,
                            unsigned int column, unsigned int row)
 {
     Check(column < snapshot.columns && row < snapshot.rows,
@@ -32,7 +32,7 @@ int main()
 {
     try {
         std::string writes;
-        TerminalCore core([&writes](const char* data, std::size_t length) {
+        TestTerminal core([&writes](const char* data, std::size_t length) {
             writes.append(data, length);
         });
         Check(core.IsReady(), "terminal core failed to initialize");
@@ -42,23 +42,24 @@ int main()
         Check(writes == "a", "lowercase input was changed before reaching the transport");
         writes.clear();
 
-        Check(core.HandleKey('A', 'A', TerminalShift, 'A'),
+        Check(core.HandleKey('A', 'A', SAKURA_TERMINAL_SHIFT, 'A'),
               "uppercase input was not handled");
         Check(writes == "A", "uppercase input was changed before reaching the transport");
         writes.clear();
 
-        Check(core.HandleKey('c', 'c', TerminalControl, 'c'),
+        Check(core.HandleKey('c', 'c', SAKURA_TERMINAL_CONTROL, 'c'),
               "control input was not handled");
         Check(writes == std::string(1, '\x03'), "control-C was encoded incorrectly");
         writes.clear();
 
-        Check(core.HandleKey(XKB_KEY_Up, XKB_KEY_NoSymbol, 0, TerminalInvalid),
+        Check(core.HandleKey(XKB_KEY_Up, XKB_KEY_NoSymbol, 0,
+                             SAKURA_TERMINAL_INVALID),
               "arrow input was not handled");
         Check(writes == "\x1b[A", "arrow input was encoded incorrectly");
 
         const std::string screen_text = "\x1b[2J\x1b[Hhello";
         core.FeedOutput(screen_text.data(), screen_text.size());
-        TerminalSnapshot snapshot = core.TakeSnapshot();
+        TestSnapshot snapshot = core.TakeSnapshot();
         Check(snapshot.columns == 40 && snapshot.rows == 8,
               "snapshot dimensions are incorrect");
         Check(CellAt(snapshot, 0, 0).codepoint == 'h',
@@ -66,11 +67,11 @@ int main()
         Check(CellAt(snapshot, 4, 0).codepoint == 'o',
               "plain text placement is incorrect");
 
-        TerminalCore frame_core(nullptr);
+        TestTerminal frame_core(nullptr);
         Check(frame_core.Resize(10, 2), "dirty frame resize failed");
         uint64_t first_generation = 0;
         {
-            const TerminalFrame first_frame = frame_core.TakeFrame();
+            const TestFrame first_frame = frame_core.TakeFrame();
             first_generation = first_frame.generation;
             Check(first_frame.generation == 1 && first_frame.changed &&
                       first_frame.full_repaint &&
@@ -81,7 +82,7 @@ int main()
         Check(frame_core.GetMetrics().frame_cells_decoded == 20,
               "first frame did not decode every cell");
         {
-            const TerminalFrame clean_frame = frame_core.TakeFrame();
+            const TestFrame clean_frame = frame_core.TakeFrame();
             Check(clean_frame.generation == first_generation &&
                       !clean_frame.changed && clean_frame.dirty.IsEmpty(),
                   "unchanged frame was not reported as clean");
@@ -91,7 +92,7 @@ int main()
         frame_core.FeedOutput("abc", 3);
         uint64_t changed_generation = 0;
         {
-            const TerminalFrame changed_frame = frame_core.TakeFrame();
+            const TestFrame changed_frame = frame_core.TakeFrame();
             changed_generation = changed_frame.generation;
             Check(changed_frame.generation > first_generation &&
                       changed_frame.changed && !changed_frame.dirty.IsEmpty() &&
@@ -106,19 +107,19 @@ int main()
         const uint64_t decoded_before_title =
             frame_core.GetMetrics().frame_cells_decoded;
         frame_core.FeedOutput(frame_title, std::strlen(frame_title));
-        const TerminalFrame title_frame = frame_core.TakeFrame();
+        const TestFrame title_frame = frame_core.TakeFrame();
         Check(title_frame.generation == changed_generation &&
                   !title_frame.changed && title_frame.dirty.IsEmpty(),
               "title-only output dirtied the screen frame");
         Check(frame_core.GetMetrics().frame_cells_decoded == decoded_before_title,
               "title-only output decoded terminal cells");
 
-        TerminalCore retained_frame_core(nullptr);
+        TestTerminal retained_frame_core(nullptr);
         Check(retained_frame_core.Resize(8, 2),
               "retained frame resize failed");
-        const TerminalFrame retained_frame = retained_frame_core.TakeFrame();
+        const TestFrame retained_frame = retained_frame_core.TakeFrame();
         retained_frame_core.FeedOutput("a", 1);
-        const TerminalFrame updated_retained_frame =
+        const TestFrame updated_retained_frame =
             retained_frame_core.TakeFrame();
         Check(retained_frame.snapshot != nullptr &&
                   updated_retained_frame.snapshot != nullptr &&
@@ -144,24 +145,24 @@ int main()
         Check(snapshot.columns == 12 && snapshot.rows == 3,
               "semantic resize dimensions are incorrect");
 
-        TerminalCore alternate_core(nullptr);
+        TestTerminal alternate_core(nullptr);
         Check(alternate_core.Resize(20, 4), "alternate screen resize failed");
         alternate_core.FeedOutput("base", 4);
         alternate_core.FeedOutput("\x1b[?1049h", 8);
         alternate_core.FeedOutput("alt", 3);
-        const TerminalSnapshot alternate_snapshot = alternate_core.TakeSnapshot();
+        const TestSnapshot alternate_snapshot = alternate_core.TakeSnapshot();
         Check(alternate_snapshot.alternate_screen,
               "alternate screen mode was not detected");
         Check(CellAt(alternate_snapshot, 4, 0).codepoint == 'a',
               "alternate screen content was not isolated");
         alternate_core.FeedOutput("\x1b[?1049l", 8);
-        const TerminalSnapshot main_snapshot = alternate_core.TakeSnapshot();
+        const TestSnapshot main_snapshot = alternate_core.TakeSnapshot();
         Check(!main_snapshot.alternate_screen &&
                   CellAt(main_snapshot, 0, 0).codepoint == 'b',
               "main screen was not restored after alternate screen");
 
         std::string bracketed_writes;
-        TerminalCore semantic_core([&bracketed_writes](const char* data,
+        TestTerminal semantic_core([&bracketed_writes](const char* data,
                                                         std::size_t length) {
             bracketed_writes.append(data, length);
         });
@@ -171,12 +172,12 @@ int main()
         Check(bracketed_writes == "\x1b[200~clip\x1b[201~",
               "bracketed paste was not encoded");
 
-        TerminalCore style_core(nullptr);
+        TestTerminal style_core(nullptr);
         Check(style_core.Resize(20, 3), "style core resize failed");
         const char* style = "\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m\x1b[1;3;4mX";
         style_core.FeedOutput(style, std::strlen(style));
-        const TerminalSnapshot style_snapshot = style_core.TakeSnapshot();
-        const TerminalCell& styled_cell = CellAt(style_snapshot, 0, 0);
+        const TestSnapshot style_snapshot = style_core.TakeSnapshot();
+        const TestCell& styled_cell = CellAt(style_snapshot, 0, 0);
         Check(styled_cell.foreground == std::array<uint8_t, 3>{1, 2, 3} &&
                   styled_cell.background == std::array<uint8_t, 3>{4, 5, 6},
               "truecolor was not preserved");
@@ -185,25 +186,25 @@ int main()
                   (styled_cell.attributes & 0x04) != 0,
               "bold italic underline attributes were not preserved");
 
-        TerminalCore cursor_core(nullptr);
+        TestTerminal cursor_core(nullptr);
         Check(cursor_core.Resize(20, 3), "cursor core resize failed");
         cursor_core.FeedOutput("\x1b[3", 3);
         cursor_core.FeedOutput(" q", 2);
         Check(cursor_core.TakeSnapshot().cursor_style ==
-                  TerminalCursorStyle::Underline,
+                  SAKURA_TERMINAL_CURSOR_UNDERLINE,
               "underline cursor style was not parsed");
         cursor_core.FeedOutput("\x1b[6 q", 5);
-        Check(cursor_core.TakeSnapshot().cursor_style == TerminalCursorStyle::Bar,
+        Check(cursor_core.TakeSnapshot().cursor_style == SAKURA_TERMINAL_CURSOR_BAR,
               "bar cursor style was not parsed");
         Check(cursor_core.GetMetrics().cursor_style_changes == 2,
               "cursor style metric was not recorded");
 
-        TerminalCore glyph_core(nullptr);
+        TestTerminal glyph_core(nullptr);
         Check(glyph_core.Resize(20, 3), "glyph core resize failed");
         glyph_core.TakeFrame();
         const char* glyphs = "\xe7\x95\x8c" "e\xcc\x81";
         glyph_core.FeedOutput(glyphs, std::strlen(glyphs));
-        const TerminalSnapshot glyph_snapshot = glyph_core.TakeSnapshot();
+        const TestSnapshot glyph_snapshot = glyph_core.TakeSnapshot();
         Check(CellAt(glyph_snapshot, 0, 0).text == "\xe7\x95\x8c" &&
                   CellAt(glyph_snapshot, 0, 0).width == 2,
               "wide glyph was not preserved");
@@ -212,7 +213,7 @@ int main()
                   glyph_snapshot.cursor_x == 3,
               "combining glyph was not preserved as one terminal cell");
 
-        TerminalCore combining_selection_core(nullptr);
+        TestTerminal combining_selection_core(nullptr);
         Check(combining_selection_core.Resize(20, 3),
               "combining selection core resize failed");
         combining_selection_core.FeedOutput("e\xcc\x81", 3);
@@ -221,17 +222,17 @@ int main()
         Check(combining_selection_core.CopySelection() == "e\xcc\x81",
               "combining mark was lost during selection copy");
 
-        TerminalCore unicode_core(nullptr);
+        TestTerminal unicode_core(nullptr);
         Check(unicode_core.Resize(20, 4), "unicode core resize failed");
         unicode_core.FeedOutput("caf", 3);
         unicode_core.FeedOutput("\xc3", 1);
         unicode_core.FeedOutput("\xa9", 1);
-        const TerminalSnapshot unicode_snapshot = unicode_core.TakeSnapshot();
+        const TestSnapshot unicode_snapshot = unicode_core.TakeSnapshot();
         Check(CellAt(unicode_snapshot, 3, 0).codepoint == 0xE9,
               "split UTF-8 input was not reconstructed correctly");
 
         std::string paste_writes;
-        TerminalCore selection_core([&paste_writes](const char* data,
+        TestTerminal selection_core([&paste_writes](const char* data,
                                                      std::size_t length) {
             paste_writes.append(data, length);
         });
@@ -244,7 +245,7 @@ int main()
         Check(copied == "select me", "selection copy returned unexpected text");
         selection_core.Paste("pasted");
         Check(paste_writes == "pasted", "paste was not sent to the transport");
-        const TerminalMetrics metrics = selection_core.GetMetrics();
+        const SakuraTerminalMetrics metrics = selection_core.GetMetrics();
         Check(metrics.output_bytes == 9 && metrics.output_chunks == 1,
               "output metrics were not recorded");
         Check(metrics.render_latency_samples >= 1,
@@ -252,7 +253,7 @@ int main()
         Check(metrics.selection_copies == 1 && metrics.paste_bytes == 6,
               "selection metrics were not recorded");
 
-        TerminalCore selection_frame_core(nullptr);
+        TestTerminal selection_frame_core(nullptr);
         Check(selection_frame_core.Resize(30, 6),
               "selection frame core resize failed");
         const char* selection_frame_text = "selection repaint range";
@@ -261,7 +262,7 @@ int main()
         selection_frame_core.TakeFrame();
         selection_frame_core.StartSelection(0, 0);
         selection_frame_core.UpdateSelection(8, 0);
-        const TerminalFrame selected_frame = selection_frame_core.TakeFrame();
+        const TestFrame selected_frame = selection_frame_core.TakeFrame();
         Check(selected_frame.changed && !selected_frame.full_repaint &&
                   selected_frame.dirty.top == 0 &&
                   selected_frame.dirty.bottom == 1 &&
@@ -269,7 +270,7 @@ int main()
                   selected_frame.dirty.right >= 9,
               "selection change requested a full repaint");
         selection_frame_core.ClearSelection();
-        const TerminalFrame cleared_selection_frame =
+        const TestFrame cleared_selection_frame =
             selection_frame_core.TakeFrame();
         Check(cleared_selection_frame.changed &&
                   !cleared_selection_frame.full_repaint &&
@@ -278,7 +279,7 @@ int main()
               "clearing selection requested a full repaint");
         selection_frame_core.StartSelection(0, 0);
         selection_frame_core.UpdateSelection(2, 1);
-        const TerminalFrame multiline_selection_frame =
+        const TestFrame multiline_selection_frame =
             selection_frame_core.TakeFrame();
         Check(multiline_selection_frame.changed &&
                   !multiline_selection_frame.full_repaint &&
@@ -286,7 +287,7 @@ int main()
                   multiline_selection_frame.dirty.bottom == 2,
               "multiline selection requested a full repaint");
 
-        TerminalCore selection_behavior_core(nullptr);
+        TestTerminal selection_behavior_core(nullptr);
         Check(selection_behavior_core.Resize(30, 6),
               "selection behavior core resize failed");
         selection_behavior_core.FeedOutput("one\r\ntwo", 8);
@@ -301,7 +302,7 @@ int main()
         Check(selection_behavior_core.CopySelection() == "two",
               "line selection returned unexpected text");
 
-        TerminalCore unicode_selection_core(nullptr);
+        TestTerminal unicode_selection_core(nullptr);
         Check(unicode_selection_core.Resize(20, 3),
               "unicode selection core resize failed");
         unicode_selection_core.FeedOutput("caf\xc3\xa9", 5);
@@ -310,7 +311,7 @@ int main()
               "Unicode word selection returned unexpected text");
 
         std::string mouse_writes;
-        TerminalCore mouse_core([&mouse_writes](const char* data,
+        TestTerminal mouse_core([&mouse_writes](const char* data,
                                                  std::size_t length) {
             mouse_writes.append(data, length);
         });
@@ -319,37 +320,37 @@ int main()
         mouse_core.FeedOutput(enable_mouse, std::strlen(enable_mouse));
         Check(mouse_core.MouseReportingEnabled(),
               "mouse reporting mode was not detected");
-        Check(mouse_core.HandleMouse(2, 3, 20, 30, TerminalMouseLeft,
-                                     TerminalMousePressed,
-                                     TerminalMouseShift),
+        Check(mouse_core.HandleMouse(2, 3, 20, 30, SAKURA_TERMINAL_MOUSE_LEFT,
+                                     SAKURA_TERMINAL_MOUSE_PRESSED,
+                                     SAKURA_TERMINAL_MOUSE_SHIFT),
               "mouse press was not forwarded");
         Check(mouse_writes == "\x1b[<4;3;4M",
               "mouse press was encoded incorrectly");
-        Check(mouse_core.HandleMouse(2, 3, 20, 30, TerminalMouseLeft,
-                                     TerminalMouseReleased, 0),
+        Check(mouse_core.HandleMouse(2, 3, 20, 30, SAKURA_TERMINAL_MOUSE_LEFT,
+                                     SAKURA_TERMINAL_MOUSE_RELEASED, 0),
               "mouse release was not forwarded");
         Check(mouse_writes == "\x1b[<4;3;4M\x1b[<0;3;4m",
               "mouse release was encoded incorrectly");
-        const TerminalMetrics mouse_metrics = mouse_core.GetMetrics();
+        const SakuraTerminalMetrics mouse_metrics = mouse_core.GetMetrics();
         Check(mouse_metrics.mouse_events == 2 &&
                   mouse_metrics.mouse_events_forwarded == 2 &&
                   mouse_metrics.mouse_mode_changes >= 2,
               "mouse metrics were not recorded");
 
-        TerminalCore scroll_core(nullptr);
+        TestTerminal scroll_core(nullptr);
         Check(scroll_core.Resize(20, 3), "scroll core resize failed");
         std::string scroll_output;
         for (unsigned int line = 0; line < 8; ++line) {
             scroll_output += "scroll-" + std::to_string(line) + "\r\n";
         }
         scroll_core.FeedOutput(scroll_output.data(), scroll_output.size());
-        const TerminalSnapshot bottom_snapshot = scroll_core.TakeSnapshot();
+        const TestSnapshot bottom_snapshot = scroll_core.TakeSnapshot();
         scroll_core.ScrollLines(1);
-        const TerminalSnapshot up_snapshot = scroll_core.TakeSnapshot();
+        const TestSnapshot up_snapshot = scroll_core.TakeSnapshot();
         Check(bottom_snapshot.cells[7].codepoint != up_snapshot.cells[7].codepoint,
               "scrolling one line did not change the visible screen");
         scroll_core.ScrollLines(-1);
-        const TerminalSnapshot restored_snapshot = scroll_core.TakeSnapshot();
+        const TestSnapshot restored_snapshot = scroll_core.TakeSnapshot();
         Check(restored_snapshot.cells[7].codepoint ==
                   bottom_snapshot.cells[7].codepoint,
               "scrolling back down did not restore the visible screen");

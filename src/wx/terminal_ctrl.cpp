@@ -41,15 +41,26 @@ public:
           config_(std::move(config)),
           callbacks_(std::move(callbacks)),
           output_timer_(&owner_),
-          transport_(std::move(transport)),
-          core_([this](const char* data, std::size_t length) {
-              if (transport_ != nullptr)
-                  transport_->Write(data, length);
-          })
+          transport_(std::move(transport))
     {
+        core_ = sakura_terminal_new(&Impl::WriteBridge, this);
         const auto& background = config_.background;
         background_brush_ = wxBrush(wxColour(background[0], background[1],
                                               background[2]));
+    }
+
+    ~Impl()
+    {
+        sakura_terminal_frame_free(pending_frame_);
+        sakura_terminal_free(core_);
+    }
+
+    static void WriteBridge(void* userdata, const char* data,
+                            std::size_t length)
+    {
+        auto* impl = static_cast<Impl*>(userdata);
+        if (impl != nullptr && impl->transport_ != nullptr)
+            impl->transport_->Write(data, length);
     }
 
     void AssertOwnerThread() const
@@ -91,11 +102,14 @@ public:
     wxBrush background_brush_;
     wxBitmap framebuffer_;
     bool framebuffer_valid_ = false;
-    TerminalFrame pending_frame_;
+    SakuraTerminalFrame* pending_frame_ = nullptr;
+    SakuraTerminalFrameInfo pending_info_ {};
+    SakuraTerminalDirtyRegion pending_dirty_ {};
+    bool pending_full_repaint_ = false;
     WxPaintMetrics paint_metrics_;
     wxTimer output_timer_;
     std::unique_ptr<TerminalTransport> transport_;
-    TerminalCore core_;
+    SakuraTerminal* core_ = nullptr;
     wxString error_;
     int cell_width_ = 8;
     int cell_height_ = 16;
@@ -111,7 +125,7 @@ public:
     unsigned int selection_anchor_row_ = 0;
     unsigned int last_click_column_ = 0;
     unsigned int last_click_row_ = 0;
-    unsigned int mouse_reporting_button_ = TerminalMouseLeft;
+    unsigned int mouse_reporting_button_ = SAKURA_TERMINAL_MOUSE_LEFT;
     int auto_scroll_direction_ = 0;
     wxPoint last_pointer_position_;
     std::chrono::steady_clock::time_point last_click_time_;
@@ -151,9 +165,9 @@ WxTerminalCtrl::WxTerminalCtrl(
                           wxFONTWEIGHT_NORMAL, false,
                           wxString::FromUTF8(impl_->config_.font_family.c_str()));
 
-    if (!impl_->core_.IsReady()) {
-        impl_->error_ = wxString::FromUTF8(impl_->core_.Error().c_str());
-        ReportError(impl_->core_.Error());
+    if (!sakura_terminal_is_ready(impl_->core_)) {
+        impl_->error_ = wxString::FromUTF8(sakura_terminal_error(impl_->core_));
+        ReportError(sakura_terminal_error(impl_->core_));
         return;
     }
 
@@ -171,7 +185,7 @@ WxTerminalCtrl::WxTerminalCtrl(
                 "\x1b[1;33mSakura wx terminal\x1b[0m\r\n"
                 "This build has libtsm and wxWidgets, but could not start "
                 "the platform process backend.\r\n";
-            impl_->core_.FeedOutput(notice, std::strlen(notice));
+            sakura_terminal_feed_output(impl_->core_, notice, std::strlen(notice));
         }
         const TransportStatus initial_status = impl_->transport_->GetStatus();
         impl_->last_transport_state_ = initial_status.state == TransportState::Failed
@@ -193,13 +207,13 @@ WxTerminalCtrl::~WxTerminalCtrl()
         impl_->transport_->Stop();
 }
 
-TerminalCore& WxTerminalCtrl::Core()
+SakuraTerminal* WxTerminalCtrl::Core()
 {
     impl_->AssertOwnerThread();
     return impl_->core_;
 }
 
-const TerminalCore& WxTerminalCtrl::Core() const
+const SakuraTerminal* WxTerminalCtrl::Core() const
 {
     impl_->AssertOwnerThread();
     return impl_->core_;
@@ -219,49 +233,58 @@ WxPaintMetrics WxTerminalCtrl::GetPaintMetrics() const
 void WxTerminalCtrl::RequestFrameRefresh()
 {
     impl_->AssertOwnerThread();
-    const TerminalFrame frame = impl_->core_.TakeFrame();
-    if (frame.snapshot == nullptr || !frame.changed)
+    SakuraTerminalFrame* frame = sakura_terminal_take_frame(impl_->core_);
+    SakuraTerminalFrameInfo info {};
+    if (frame == nullptr || !sakura_terminal_frame_info(frame, &info)) {
+        sakura_terminal_frame_free(frame);
         return;
-
-    if (impl_->pending_frame_.snapshot == nullptr) {
-        impl_->pending_frame_ = frame;
-    } else {
-        const TerminalSnapshot& snapshot = *frame.snapshot;
-        if (frame.full_repaint) {
-            impl_->pending_frame_.dirty = {
-                0, 0, snapshot.columns, snapshot.rows
-            };
-        } else if (!frame.dirty.IsEmpty()) {
-            TerminalDirtyRegion& dirty = impl_->pending_frame_.dirty;
-            if (dirty.IsEmpty()) {
-                dirty = frame.dirty;
-            } else {
-                dirty.left = std::min(dirty.left, frame.dirty.left);
-                dirty.top = std::min(dirty.top, frame.dirty.top);
-                dirty.right = std::max(dirty.right, frame.dirty.right);
-                dirty.bottom = std::max(dirty.bottom, frame.dirty.bottom);
-            }
-        }
-        impl_->pending_frame_.generation = frame.generation;
-        impl_->pending_frame_.changed = true;
-        impl_->pending_frame_.full_repaint =
-            impl_->pending_frame_.full_repaint || frame.full_repaint;
-        impl_->pending_frame_.snapshot = frame.snapshot;
+    }
+    if (!info.changed) {
+        sakura_terminal_frame_free(frame);
+        return;
     }
 
+    SakuraTerminalDirtyRegion dirty = info.dirty;
+    bool full_repaint = info.full_repaint != 0;
+    if (full_repaint)
+        dirty = {0, 0, info.columns, info.rows};
+
+    if (impl_->pending_frame_ != nullptr) {
+        if (impl_->pending_full_repaint_)
+            dirty = {0, 0, info.columns, info.rows};
+        else if (dirty.left < dirty.right && dirty.top < dirty.bottom) {
+            SakuraTerminalDirtyRegion& pending_dirty = impl_->pending_dirty_;
+            if (pending_dirty.left < pending_dirty.right &&
+                pending_dirty.top < pending_dirty.bottom) {
+                dirty.left = std::min(dirty.left, pending_dirty.left);
+                dirty.top = std::min(dirty.top, pending_dirty.top);
+                dirty.right = std::max(dirty.right, pending_dirty.right);
+                dirty.bottom = std::max(dirty.bottom, pending_dirty.bottom);
+            }
+        }
+        full_repaint = full_repaint || impl_->pending_full_repaint_;
+        sakura_terminal_frame_free(impl_->pending_frame_);
+    }
+    impl_->pending_frame_ = frame;
+    impl_->pending_info_ = info;
+    impl_->pending_full_repaint_ = full_repaint;
+    impl_->pending_dirty_ = dirty;
+    impl_->pending_info_.full_repaint = full_repaint ? 1 : 0;
+    impl_->pending_info_.dirty = dirty;
+
     ++impl_->paint_metrics_.refresh_requests;
-    const TerminalFrame& pending = impl_->pending_frame_;
-    if (pending.full_repaint || pending.dirty.IsEmpty()) {
+    const SakuraTerminalFrameInfo& pending = impl_->pending_info_;
+    if (pending.full_repaint || pending.dirty.left >= pending.dirty.right ||
+        pending.dirty.top >= pending.dirty.bottom) {
         ++impl_->paint_metrics_.full_refresh_requests;
         Refresh(false);
         return;
     }
 
-    const TerminalSnapshot& snapshot = *pending.snapshot;
-    const unsigned int left = std::min(pending.dirty.left, snapshot.columns);
-    const unsigned int top = std::min(pending.dirty.top, snapshot.rows);
-    const unsigned int right = std::min(pending.dirty.right, snapshot.columns);
-    const unsigned int bottom = std::min(pending.dirty.bottom, snapshot.rows);
+    const unsigned int left = std::min(pending.dirty.left, pending.columns);
+    const unsigned int top = std::min(pending.dirty.top, pending.rows);
+    const unsigned int right = std::min(pending.dirty.right, pending.columns);
+    const unsigned int bottom = std::min(pending.dirty.bottom, pending.rows);
     if (left >= right || top >= bottom) {
         ++impl_->paint_metrics_.full_refresh_requests;
         Refresh(false);
@@ -293,7 +316,7 @@ void WxTerminalCtrl::UpdateGeometry()
         return;
     impl_->columns_ = columns;
     impl_->rows_ = rows;
-    impl_->core_.Resize(impl_->columns_, impl_->rows_);
+    sakura_terminal_resize(impl_->core_, impl_->columns_, impl_->rows_);
     if (impl_->transport_ != nullptr)
         impl_->transport_->Resize(impl_->columns_, impl_->rows_);
 }
@@ -341,31 +364,34 @@ const wxFont& WxTerminalCtrl::GlyphFont(uint8_t attributes)
     return impl_->glyph_fonts_[index];
 }
 
-const wxString& WxTerminalCtrl::GlyphText(const std::string& text)
+const wxString& WxTerminalCtrl::GlyphText(const char* text, std::size_t length)
 {
     constexpr std::size_t max_glyph_texts = 4096;
-    const auto existing = impl_->glyph_texts_.find(text);
+    const std::string key(text == nullptr ? "" : std::string(text, length));
+    const auto existing = impl_->glyph_texts_.find(key);
     if (existing != impl_->glyph_texts_.end())
         return existing->second;
     if (impl_->glyph_texts_.size() >= max_glyph_texts)
         impl_->glyph_texts_.clear();
     const auto inserted = impl_->glyph_texts_.emplace(
-        text, wxString::FromUTF8(text));
+        key, wxString::FromUTF8(key.c_str()));
     return inserted.first->second;
 }
 
-void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
-                                    const TerminalSnapshot& snapshot,
-                                    const TerminalDirtyRegion& dirty,
-                                    uint64_t* painted_cells)
+void WxTerminalCtrl::RenderFrame(wxDC& dc,
+                                 const SakuraTerminalFrame* frame,
+                                 const SakuraTerminalFrameInfo& info,
+                                 const SakuraTerminalDirtyRegion& dirty,
+                                 uint64_t* painted_cells)
 {
-    if (dirty.IsEmpty() || snapshot.columns == 0 || snapshot.rows == 0)
+    if (frame == nullptr || dirty.left >= dirty.right ||
+        dirty.top >= dirty.bottom || info.columns == 0 || info.rows == 0)
         return;
 
-    const unsigned int left = std::min(dirty.left, snapshot.columns);
-    const unsigned int top = std::min(dirty.top, snapshot.rows);
-    const unsigned int right = std::min(dirty.right, snapshot.columns);
-    const unsigned int bottom = std::min(dirty.bottom, snapshot.rows);
+    const unsigned int left = std::min(dirty.left, info.columns);
+    const unsigned int top = std::min(dirty.top, info.rows);
+    const unsigned int right = std::min(dirty.right, info.columns);
+    const unsigned int bottom = std::min(dirty.bottom, info.rows);
     if (left >= right || top >= bottom)
         return;
 
@@ -376,105 +402,79 @@ void WxTerminalCtrl::RenderSnapshot(wxDC& dc,
                      (bottom - top) * impl_->cell_height_);
     dc.SetFont(impl_->font_);
 
-    uint32_t current_background = 0xffffffffu;
-    uint32_t current_foreground = 0xffffffffu;
-    uint8_t current_font_attributes = 0xffu;
-
     for (unsigned int row = top; row < bottom; ++row) {
-        wxString glyph_run;
-        unsigned int glyph_run_start = 0;
-        unsigned int glyph_run_end = 0;
-        uint32_t glyph_run_foreground = 0xffffffffu;
-        uint8_t glyph_run_font_attributes = 0xffu;
-        const auto flush_glyph_run = [&]() {
-            if (glyph_run.empty())
-                return;
-            dc.DrawText(glyph_run,
-                        glyph_run_start * impl_->cell_width_,
-                        row * impl_->cell_height_);
-            glyph_run.clear();
-        };
-
-        for (unsigned int column = left; column < right; ++column) {
-            if (painted_cells != nullptr)
-                ++*painted_cells;
-            const auto& cell = snapshot.cells[row * snapshot.columns + column];
-            if (cell.width == 0) {
-                flush_glyph_run();
+        const std::size_t run_count =
+            sakura_terminal_frame_row_run_count(frame, row);
+        for (std::size_t index = 0; index < run_count; ++index) {
+            SakuraTerminalRunView run {};
+            if (!sakura_terminal_frame_row_run(frame, row, index, &run))
                 continue;
-            }
-            const unsigned int span = std::min(
-                std::max(1u, cell.width), snapshot.columns - column);
-            const uint32_t background_key = ColorKey(cell.background);
-            if (background_key != current_background) {
-                dc.SetBrush(impl_->ColorResourcesFor(cell.background).brush);
-                current_background = background_key;
-            }
-            dc.DrawRectangle(column * impl_->cell_width_, row * impl_->cell_height_,
-                             span * impl_->cell_width_, impl_->cell_height_);
 
-            const uint32_t foreground_key = ColorKey(cell.foreground);
-            if (foreground_key != current_foreground) {
-                flush_glyph_run();
-                dc.SetTextForeground(
-                    impl_->ColorResourcesFor(cell.foreground).color);
-                current_foreground = foreground_key;
-            }
-            const uint8_t font_attributes = cell.attributes & 0x07;
-            if (font_attributes != current_font_attributes) {
-                flush_glyph_run();
-                dc.SetFont(GlyphFont(cell.attributes));
-                current_font_attributes = font_attributes;
-            }
-            const wxString& glyph = GlyphText(cell.text);
-            if (!glyph.empty() && cell.text != " " && cell.width == 1) {
-                if (glyph_run.empty() || glyph_run_end != column ||
-                    glyph_run_foreground != foreground_key ||
-                    glyph_run_font_attributes != font_attributes) {
-                    flush_glyph_run();
-                    glyph_run_start = column;
-                    glyph_run_foreground = foreground_key;
-                    glyph_run_font_attributes = font_attributes;
+            const unsigned int run_right = std::min(
+                info.columns, run.left + std::max(1u, run.cell_count));
+            const unsigned int draw_left = std::max(left, run.left);
+            const unsigned int draw_right = std::min(right, run_right);
+            if (draw_left >= draw_right)
+                continue;
+            if (painted_cells != nullptr)
+                *painted_cells += draw_right - draw_left;
+
+            const std::array<uint8_t, 3> foreground {
+                run.foreground[0], run.foreground[1], run.foreground[2]};
+            const std::array<uint8_t, 3> background {
+                run.background[0], run.background[1], run.background[2]};
+            dc.SetBrush(impl_->ColorResourcesFor(background).brush);
+            dc.DrawRectangle(draw_left * impl_->cell_width_,
+                             row * impl_->cell_height_,
+                             (draw_right - draw_left) * impl_->cell_width_,
+                             impl_->cell_height_);
+            dc.SetTextForeground(impl_->ColorResourcesFor(foreground).color);
+            dc.SetFont(GlyphFont(run.attributes));
+
+            bool has_glyph = false;
+            for (std::size_t text_index = 0; text_index < run.text_length;
+                 ++text_index) {
+                if (run.text[text_index] != ' ') {
+                    has_glyph = true;
+                    break;
                 }
-                glyph_run += glyph;
-                glyph_run_end = column + 1;
-            } else {
-                flush_glyph_run();
-                if (!glyph.empty() && cell.text != " ")
-                    dc.DrawText(glyph, column * impl_->cell_width_,
+            }
+            if (has_glyph && run.text_length > 0) {
+                const wxString& glyph = GlyphText(run.text, run.text_length);
+                if (!glyph.empty())
+                    dc.DrawText(glyph, run.left * impl_->cell_width_,
                                 row * impl_->cell_height_);
             }
-            if ((cell.attributes & 0x04) != 0) {
-                dc.SetPen(impl_->ColorResourcesFor(cell.foreground).pen);
+            if ((run.attributes & 0x04) != 0) {
+                dc.SetPen(impl_->ColorResourcesFor(foreground).pen);
                 const int underline_y = (row + 1) * impl_->cell_height_ - 2;
-                dc.DrawLine(column * impl_->cell_width_, underline_y,
-                            (column + span) * impl_->cell_width_ - 1, underline_y);
+                dc.DrawLine(draw_left * impl_->cell_width_, underline_y,
+                            draw_right * impl_->cell_width_ - 1, underline_y);
                 dc.SetPen(*wxTRANSPARENT_PEN);
             }
         }
-        flush_glyph_run();
     }
 
     const bool cursor_in_dirty_region =
-        snapshot.cursor_x >= left && snapshot.cursor_x < right &&
-        snapshot.cursor_y >= top && snapshot.cursor_y < bottom;
-    if (cursor_in_dirty_region && snapshot.cursor_visible &&
-        snapshot.cursor_x < snapshot.columns && snapshot.cursor_y < snapshot.rows) {
+        info.cursor_x >= left && info.cursor_x < right &&
+        info.cursor_y >= top && info.cursor_y < bottom;
+    if (cursor_in_dirty_region && info.cursor_visible &&
+        info.cursor_x < info.columns && info.cursor_y < info.rows) {
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
         dc.SetPen(wxPen(wxColour(230, 230, 230), 1));
-        const int cursor_x = snapshot.cursor_x * impl_->cell_width_;
-        const int cursor_y = snapshot.cursor_y * impl_->cell_height_;
-        switch (snapshot.cursor_style) {
-        case TerminalCursorStyle::Underline:
+        const int cursor_x = info.cursor_x * impl_->cell_width_;
+        const int cursor_y = info.cursor_y * impl_->cell_height_;
+        switch (info.cursor_style) {
+        case SAKURA_TERMINAL_CURSOR_UNDERLINE:
             dc.DrawLine(cursor_x, cursor_y + impl_->cell_height_ - 2,
                         cursor_x + impl_->cell_width_ - 1,
                         cursor_y + impl_->cell_height_ - 2);
             break;
-        case TerminalCursorStyle::Bar:
+        case SAKURA_TERMINAL_CURSOR_BAR:
             dc.DrawLine(cursor_x + 1, cursor_y + 1,
                         cursor_x + 1, cursor_y + impl_->cell_height_ - 2);
             break;
-        case TerminalCursorStyle::Block:
+        case SAKURA_TERMINAL_CURSOR_BLOCK:
             dc.DrawRectangle(cursor_x, cursor_y, impl_->cell_width_, impl_->cell_height_);
             break;
         }
@@ -499,7 +499,7 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
     dc.SetBackground(wxBrush(wxColour(background[0], background[1],
                                        background[2])));
 
-    if (!impl_->core_.IsReady()) {
+    if (!sakura_terminal_is_ready(impl_->core_)) {
         dc.Clear();
         const auto& error_foreground = impl_->config_.error_foreground;
         dc.SetTextForeground(wxColour(error_foreground[0], error_foreground[1],
@@ -509,18 +509,33 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         return;
     }
 
-    TerminalFrame frame;
-    if (impl_->pending_frame_.snapshot != nullptr) {
-        frame = std::move(impl_->pending_frame_);
-        impl_->pending_frame_ = {};
+    SakuraTerminalFrame* frame = nullptr;
+    SakuraTerminalFrameInfo info {};
+    SakuraTerminalDirtyRegion dirty {};
+    bool full_repaint = false;
+    if (impl_->pending_frame_ != nullptr) {
+        frame = impl_->pending_frame_;
+        info = impl_->pending_info_;
+        dirty = impl_->pending_dirty_;
+        full_repaint = impl_->pending_full_repaint_;
+        impl_->pending_frame_ = nullptr;
+        impl_->pending_info_ = {};
+        impl_->pending_dirty_ = {};
+        impl_->pending_full_repaint_ = false;
     } else {
-        frame = impl_->core_.TakeFrame();
+        frame = sakura_terminal_take_frame(impl_->core_);
+        if (frame == nullptr || !sakura_terminal_frame_info(frame, &info)) {
+            sakura_terminal_frame_free(frame);
+            record_paint();
+            return;
+        }
+        dirty = info.dirty;
+        full_repaint = info.full_repaint != 0;
     }
-    if (frame.snapshot == nullptr) {
+    if (frame == nullptr) {
         record_paint();
         return;
     }
-    const TerminalSnapshot& snapshot = *frame.snapshot;
     const wxSize client_size = GetClientSize();
     const int bitmap_width = std::max(1, client_size.GetWidth());
     const int bitmap_height = std::max(1, client_size.GetHeight());
@@ -535,25 +550,26 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
     wxMemoryDC framebuffer_dc;
     framebuffer_dc.SelectObject(impl_->framebuffer_);
     uint64_t painted_cells = 0;
-    if (!impl_->framebuffer_valid_ || frame.full_repaint) {
+    if (!impl_->framebuffer_valid_ || full_repaint) {
         ++impl_->paint_metrics_.full_repaints;
         framebuffer_dc.SetBackground(wxBrush(wxColour(background[0],
                                                        background[1],
                                                        background[2])));
         framebuffer_dc.Clear();
-        const TerminalDirtyRegion full_region {
-            0, 0, snapshot.columns, snapshot.rows
+        const SakuraTerminalDirtyRegion full_region {
+            0, 0, info.columns, info.rows
         };
-        RenderSnapshot(framebuffer_dc, snapshot, full_region, &painted_cells);
+        RenderFrame(framebuffer_dc, frame, info, full_region, &painted_cells);
         impl_->framebuffer_valid_ = true;
-    } else if (frame.changed) {
+    } else if (info.changed) {
         ++impl_->paint_metrics_.partial_repaints;
-        RenderSnapshot(framebuffer_dc, snapshot, frame.dirty, &painted_cells);
+        RenderFrame(framebuffer_dc, frame, info, dirty, &painted_cells);
     }
     framebuffer_dc.SelectObject(wxNullBitmap);
     impl_->paint_metrics_.painted_cells += painted_cells;
 
     dc.DrawBitmap(impl_->framebuffer_, 0, 0, false);
+    sakura_terminal_frame_free(frame);
     record_paint();
 }
 
@@ -592,13 +608,14 @@ void WxTerminalCtrl::OnChar(wxKeyEvent& event)
     }
 
     unsigned int modifiers = 0;
-    if (event.ShiftDown()) modifiers |= TerminalShift;
-    if (event.ControlDown()) modifiers |= TerminalControl;
-    if (event.AltDown()) modifiers |= TerminalAlt;
-    if (event.MetaDown()) modifiers |= TerminalLogo;
+    if (event.ShiftDown()) modifiers |= SAKURA_TERMINAL_SHIFT;
+    if (event.ControlDown()) modifiers |= SAKURA_TERMINAL_CONTROL;
+    if (event.AltDown()) modifiers |= SAKURA_TERMINAL_ALT;
+    if (event.MetaDown()) modifiers |= SAKURA_TERMINAL_LOGO;
 
-    const uint32_t ascii = unicode <= 0x7f ? unicode : TerminalInvalid;
-    if (impl_->core_.HandleKey(KeySymFor(event), ascii, modifiers, unicode)) {
+    const uint32_t ascii = unicode <= 0x7f ? unicode : SAKURA_TERMINAL_INVALID;
+    if (sakura_terminal_handle_key(impl_->core_, KeySymFor(event), ascii,
+                                   modifiers, unicode)) {
         RequestFrameRefresh();
         return;
     }
@@ -607,22 +624,23 @@ void WxTerminalCtrl::OnChar(wxKeyEvent& event)
 
 void WxTerminalCtrl::OnMouseWheel(wxMouseEvent& event)
 {
-    if (!event.ShiftDown() && impl_->core_.MouseReportingEnabled()) {
+    if (!event.ShiftDown() &&
+        sakura_terminal_mouse_reporting_enabled(impl_->core_)) {
         const unsigned int button = event.GetWheelRotation() > 0
-            ? TerminalMouseWheelUp
-            : TerminalMouseWheelDown;
+            ? SAKURA_TERMINAL_MOUSE_WHEEL_UP
+            : SAKURA_TERMINAL_MOUSE_WHEEL_DOWN;
         const auto [column, row] = CellAt(event.GetPosition());
-        impl_->core_.HandleMouse(column, row,
-                          static_cast<unsigned int>(std::max(0, event.GetX())),
-                          static_cast<unsigned int>(std::max(0, event.GetY())),
-                          button, TerminalMousePressed,
-                          MouseModifiers(event));
+        sakura_terminal_handle_mouse(
+            impl_->core_, column, row,
+            static_cast<unsigned int>(std::max(0, event.GetX())),
+            static_cast<unsigned int>(std::max(0, event.GetY())), button,
+            SAKURA_TERMINAL_MOUSE_PRESSED, MouseModifiers(event));
         return;
     }
     if (event.GetWheelRotation() > 0)
-        impl_->core_.ScrollPageUp(3);
+        sakura_terminal_scroll_page_up(impl_->core_, 3);
     else if (event.GetWheelRotation() < 0)
-        impl_->core_.ScrollPageDown(3);
+        sakura_terminal_scroll_page_down(impl_->core_, 3);
     RequestFrameRefresh();
 }
 
@@ -640,9 +658,9 @@ WxTerminalCtrl::CellAt(const wxPoint& point) const
 unsigned char WxTerminalCtrl::MouseModifiers(const wxMouseEvent& event)
 {
     unsigned char modifiers = 0;
-    if (event.ShiftDown()) modifiers |= TerminalMouseShift;
-    if (event.MetaDown()) modifiers |= TerminalMouseMeta;
-    if (event.ControlDown()) modifiers |= TerminalMouseControl;
+    if (event.ShiftDown()) modifiers |= SAKURA_TERMINAL_MOUSE_SHIFT;
+    if (event.MetaDown()) modifiers |= SAKURA_TERMINAL_MOUSE_META;
+    if (event.ControlDown()) modifiers |= SAKURA_TERMINAL_MOUSE_CONTROL;
     return modifiers;
 }
 
@@ -650,11 +668,12 @@ bool WxTerminalCtrl::ForwardMouse(const wxMouseEvent& event,
                                   unsigned int button,
                                   unsigned int mouse_event)
 {
-    if (event.ShiftDown() || !impl_->core_.MouseReportingEnabled())
+    if (event.ShiftDown() ||
+        !sakura_terminal_mouse_reporting_enabled(impl_->core_))
         return false;
     const auto [column, row] = CellAt(event.GetPosition());
-    return impl_->core_.HandleMouse(
-        column, row,
+    return sakura_terminal_handle_mouse(
+        impl_->core_, column, row,
         static_cast<unsigned int>(std::max(0, event.GetX())),
         static_cast<unsigned int>(std::max(0, event.GetY())),
         button, mouse_event, MouseModifiers(event));
@@ -672,11 +691,11 @@ void WxTerminalCtrl::EndMouseReporting(const wxMouseEvent& event)
     if (!impl_->mouse_reporting_gesture_)
         return;
     const auto [column, row] = CellAt(event.GetPosition());
-    impl_->core_.HandleMouse(
-        column, row,
+    sakura_terminal_handle_mouse(
+        impl_->core_, column, row,
         static_cast<unsigned int>(std::max(0, event.GetX())),
         static_cast<unsigned int>(std::max(0, event.GetY())),
-        impl_->mouse_reporting_button_, TerminalMouseReleased,
+        impl_->mouse_reporting_button_, SAKURA_TERMINAL_MOUSE_RELEASED,
         MouseModifiers(event));
     impl_->mouse_reporting_gesture_ = false;
     if (HasCapture())
@@ -687,9 +706,9 @@ void WxTerminalCtrl::OnLeftDown(wxMouseEvent& event)
 {
     SetFocus();
     const auto [column, row] = CellAt(event.GetPosition());
-    if (ForwardMouse(event, TerminalMouseLeft,
-                     TerminalMousePressed)) {
-        BeginMouseReporting(TerminalMouseLeft);
+    if (ForwardMouse(event, SAKURA_TERMINAL_MOUSE_LEFT,
+                     SAKURA_TERMINAL_MOUSE_PRESSED)) {
+        BeginMouseReporting(SAKURA_TERMINAL_MOUSE_LEFT);
         return;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -705,15 +724,16 @@ void WxTerminalCtrl::OnLeftDown(wxMouseEvent& event)
     impl_->last_click_column_ = column;
     impl_->last_click_row_ = row;
 
-    const bool extend_selection = event.ShiftDown() && impl_->core_.HasSelection();
+    const bool extend_selection = event.ShiftDown() &&
+        sakura_terminal_has_selection(impl_->core_);
     if (extend_selection) {
-        impl_->core_.UpdateSelection(column, row);
+        sakura_terminal_update_selection(impl_->core_, column, row);
     } else {
-        impl_->core_.ClearSelection();
+        sakura_terminal_clear_selection(impl_->core_);
         if (impl_->click_count_ == 2)
-            impl_->core_.SelectWord(column, row);
+            sakura_terminal_select_word(impl_->core_, column, row);
         else if (impl_->click_count_ == 3)
-            impl_->core_.SelectLine(row);
+            sakura_terminal_select_line(impl_->core_, row);
     }
 
     impl_->pointer_down_ = true;
@@ -736,7 +756,7 @@ void WxTerminalCtrl::OnLeftUp(wxMouseEvent& event)
     const auto [column, row] = CellAt(event.GetPosition());
     const bool should_copy = impl_->selection_dragging_ || impl_->click_count_ >= 2;
     if (impl_->selection_dragging_)
-        impl_->core_.UpdateSelection(column, row);
+        sakura_terminal_update_selection(impl_->core_, column, row);
     impl_->selection_dragging_ = false;
     impl_->pointer_down_ = false;
     impl_->auto_scroll_direction_ = 0;
@@ -750,9 +770,9 @@ void WxTerminalCtrl::OnLeftUp(wxMouseEvent& event)
 void WxTerminalCtrl::OnMouseButtonDown(wxMouseEvent& event)
 {
     const unsigned int button = event.RightDown()
-        ? TerminalMouseRight
-        : TerminalMouseMiddle;
-    if (ForwardMouse(event, button, TerminalMousePressed))
+        ? SAKURA_TERMINAL_MOUSE_RIGHT
+        : SAKURA_TERMINAL_MOUSE_MIDDLE;
+    if (ForwardMouse(event, button, SAKURA_TERMINAL_MOUSE_PRESSED))
         BeginMouseReporting(button);
 }
 
@@ -771,10 +791,11 @@ void WxTerminalCtrl::UpdateSelectionAt(const wxPoint& position)
         impl_->auto_scroll_direction_ = 1;
 
     if (impl_->auto_scroll_direction_ != 0)
-        impl_->core_.ScrollLines(impl_->auto_scroll_direction_ < 0 ? 1 : -1);
+        sakura_terminal_scroll_lines(impl_->core_,
+                                     impl_->auto_scroll_direction_ < 0 ? 1 : -1);
 
     const auto [column, row] = CellAt(position);
-    impl_->core_.UpdateSelection(column, row);
+    sakura_terminal_update_selection(impl_->core_, column, row);
 }
 
 void WxTerminalCtrl::OnMotion(wxMouseEvent& event)
@@ -782,23 +803,24 @@ void WxTerminalCtrl::OnMotion(wxMouseEvent& event)
     if (impl_->mouse_reporting_gesture_) {
         if (event.Dragging()) {
             const auto [column, row] = CellAt(event.GetPosition());
-            impl_->core_.HandleMouse(
-                column, row,
+            sakura_terminal_handle_mouse(
+                impl_->core_, column, row,
                 static_cast<unsigned int>(std::max(0, event.GetX())),
                 static_cast<unsigned int>(std::max(0, event.GetY())),
-                32 + impl_->mouse_reporting_button_, TerminalMouseMoved,
+                32 + impl_->mouse_reporting_button_, SAKURA_TERMINAL_MOUSE_MOVED,
                 MouseModifiers(event));
         }
         return;
     }
     if (!impl_->pointer_down_ || !event.Dragging()) {
-        if (!event.ShiftDown() && impl_->core_.MouseReportingEnabled()) {
+        if (!event.ShiftDown() &&
+            sakura_terminal_mouse_reporting_enabled(impl_->core_)) {
             const auto [column, row] = CellAt(event.GetPosition());
-            impl_->core_.HandleMouse(
-                column, row,
+            sakura_terminal_handle_mouse(
+                impl_->core_, column, row,
                 static_cast<unsigned int>(std::max(0, event.GetX())),
                 static_cast<unsigned int>(std::max(0, event.GetY())),
-                TerminalMouseLeft, TerminalMouseMoved,
+                SAKURA_TERMINAL_MOUSE_LEFT, SAKURA_TERMINAL_MOUSE_MOVED,
                 MouseModifiers(event));
         }
         return;
@@ -807,7 +829,9 @@ void WxTerminalCtrl::OnMotion(wxMouseEvent& event)
     const int distance_x = std::abs(position.x - impl_->pointer_down_position_.x);
     const int distance_y = std::abs(position.y - impl_->pointer_down_position_.y);
     if (!impl_->selection_dragging_ && (distance_x >= 4 || distance_y >= 4)) {
-        impl_->core_.StartSelection(impl_->selection_anchor_column_, impl_->selection_anchor_row_);
+        sakura_terminal_start_selection(impl_->core_,
+                                        impl_->selection_anchor_column_,
+                                        impl_->selection_anchor_row_);
         impl_->selection_dragging_ = true;
     }
     if (!impl_->selection_dragging_)
@@ -819,9 +843,14 @@ void WxTerminalCtrl::OnMotion(wxMouseEvent& event)
 
 bool WxTerminalCtrl::CopySelectionToClipboard()
 {
-    const std::string text = impl_->core_.CopySelection();
-    if (text.empty() || wxTheClipboard == nullptr || !wxTheClipboard->Open())
+    char* copied_text = sakura_terminal_copy_selection(impl_->core_);
+    if (copied_text == nullptr || *copied_text == '\0' ||
+        wxTheClipboard == nullptr || !wxTheClipboard->Open()) {
+        sakura_terminal_free_string(copied_text);
         return false;
+    }
+    const std::string text(copied_text);
+    sakura_terminal_free_string(copied_text);
     const bool copied = wxTheClipboard->SetData(
         new wxTextDataObject(wxString::FromUTF8(text)));
     wxTheClipboard->Close();
@@ -842,7 +871,7 @@ bool WxTerminalCtrl::PasteFromClipboard()
     const auto utf8 = text.ToUTF8();
     if (utf8.data() == nullptr)
         return false;
-    impl_->core_.Paste(std::string(utf8.data(), utf8.length()));
+    sakura_terminal_paste(impl_->core_, utf8.data(), utf8.length());
     RequestFrameRefresh();
     return true;
 }
@@ -850,7 +879,8 @@ bool WxTerminalCtrl::PasteFromClipboard()
 void WxTerminalCtrl::NotifyTitleChanged()
 {
     impl_->AssertOwnerThread();
-    const std::string title = impl_->core_.Title();
+    const char* title_value = sakura_terminal_title(impl_->core_);
+    const std::string title = title_value == nullptr ? "" : title_value;
     if (title == impl_->last_title_)
         return;
     impl_->last_title_ = title;
@@ -900,7 +930,7 @@ void WxTerminalCtrl::ShowTransportNotice(const TransportStatus& status)
         break;
     }
     notice += "]\x1b[0m\r\n";
-    impl_->core_.FeedOutput(notice.data(), notice.size());
+    sakura_terminal_feed_output(impl_->core_, notice.data(), notice.size());
 }
 
 void WxTerminalCtrl::RestartTransport()
@@ -908,11 +938,11 @@ void WxTerminalCtrl::RestartTransport()
     if (impl_->transport_ == nullptr)
         return;
     impl_->transport_->Stop();
-    impl_->core_.ClearSelection();
+    sakura_terminal_clear_selection(impl_->core_);
     const char* shell = std::getenv("SHELL");
     impl_->transport_->Start(impl_->columns_, impl_->rows_, shell == nullptr ? "" : shell);
     const char* clear = "\x1b[2J\x1b[H";
-    impl_->core_.FeedOutput(clear, std::strlen(clear));
+    sakura_terminal_feed_output(impl_->core_, clear, std::strlen(clear));
     const TransportStatus status = impl_->transport_->GetStatus();
     ShowTransportNotice(status);
     impl_->last_transport_state_ = status.state == TransportState::Failed
@@ -945,15 +975,16 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
 {
     impl_->AssertOwnerThread();
     if (impl_->selection_dragging_ && impl_->auto_scroll_direction_ != 0) {
-        impl_->core_.ScrollLines(impl_->auto_scroll_direction_ < 0 ? 1 : -1);
+        sakura_terminal_scroll_lines(impl_->core_,
+                                     impl_->auto_scroll_direction_ < 0 ? 1 : -1);
         const auto [column, row] = CellAt(impl_->last_pointer_position_);
-        impl_->core_.UpdateSelection(column, row);
+        sakura_terminal_update_selection(impl_->core_, column, row);
         RequestFrameRefresh();
     }
     const auto output = impl_->transport_ != nullptr
         ? impl_->transport_->TakeOutput() : std::vector<std::string> {};
     for (const auto& chunk : output)
-        impl_->core_.FeedOutput(chunk.data(), chunk.size());
+        sakura_terminal_feed_output(impl_->core_, chunk.data(), chunk.size());
     if (!output.empty())
         RequestFrameRefresh();
     NotifyTitleChanged();
@@ -963,7 +994,8 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
     if (impl_->callbacks_.on_metrics && impl_->config_.metrics_interval_ms > 0 &&
         now - impl_->last_metrics_callback_ >= std::chrono::milliseconds(
             impl_->config_.metrics_interval_ms)) {
-        const TerminalMetrics core_metrics = impl_->core_.GetMetrics();
+        SakuraTerminalMetrics core_metrics {};
+        sakura_terminal_get_metrics(impl_->core_, &core_metrics);
         const TransportMetrics transport_metrics = impl_->transport_ != nullptr
             ? impl_->transport_->GetMetrics() : TransportMetrics {};
         impl_->callbacks_.on_metrics(core_metrics, transport_metrics);
@@ -972,7 +1004,8 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
 
     if (impl_->trace_metrics_) {
         if (now - impl_->last_metrics_log_ >= std::chrono::seconds(1)) {
-            const TerminalMetrics core_metrics = impl_->core_.GetMetrics();
+            SakuraTerminalMetrics core_metrics {};
+            sakura_terminal_get_metrics(impl_->core_, &core_metrics);
             const TransportMetrics transport_metrics = impl_->transport_ != nullptr
                 ? impl_->transport_->GetMetrics() : TransportMetrics {};
             std::fprintf(stderr,
