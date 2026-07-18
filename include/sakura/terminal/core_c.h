@@ -10,6 +10,8 @@ extern "C" {
 
 #define SAKURA_TERMINAL_CORE_ABI_VERSION 2u
 #define SAKURA_TERMINAL_INVALID UINT32_MAX
+/* Packed row runs are bounded for efficient renderer-side glyph caching. */
+#define SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS 32u
 
 typedef struct SakuraTerminal SakuraTerminal;
 typedef struct SakuraTerminalFrame SakuraTerminalFrame;
@@ -104,8 +106,11 @@ typedef struct SakuraTerminalRunView {
     uint8_t attributes;
 } SakuraTerminalRunView;
 
-/* Run text is UTF-8 borrowed from the frame. `cell_count` counts terminal
- * grid cells, so it includes the two-cell advance of a wide glyph. */
+/* Run text is UTF-8 borrowed from the frame. Runs are homogeneous in style
+ * and are bounded by SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS. `cell_count` counts
+ * terminal grid cells, so it includes the two-cell advance of a wide glyph.
+ * Run boundaries never leave a wide glyph's leading cell at the end of a run.
+ */
 
 typedef struct SakuraTerminalMetrics {
     uint64_t output_bytes;

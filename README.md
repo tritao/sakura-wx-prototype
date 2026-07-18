@@ -192,9 +192,9 @@ REPEATS=10 OUTPUT_DIR=/tmp/sakura-wx-profile \
   ./scripts/run_wx_paint_profile.sh
 ```
 
-The current policy uses a 4 MiB default glyph cache: bounded run chunking keeps
-full-screen profiles below that limit, while the scroll renderer bypasses
-one-shot newly exposed rows to avoid polluting the cache.
+The current policy uses a 4 MiB default glyph cache: the terminal core emits
+style-homogeneous run spans capped at 32 cells, while the scroll renderer
+bypasses one-shot newly exposed rows to avoid polluting the cache.
 
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,

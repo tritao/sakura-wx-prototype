@@ -98,6 +98,8 @@ RunStats EnumerateRuns(const SakuraTerminalFrame* frame,
             SakuraTerminalRunView run {};
             Check(sakura_terminal_frame_row_run(frame, row, index, &run),
                   "row-run lookup failed");
+            Check(run.cell_count <= SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS,
+                  "row-run span exceeded the packed bound");
             ++stats.count;
             stats.cells += run.cell_count;
             stats.text_bytes += run.text_length;

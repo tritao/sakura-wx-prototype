@@ -109,6 +109,72 @@ int main(void)
     }
     sakura_terminal_frame_free(frame);
 
+    SakuraTerminal *span_terminal = sakura_terminal_new(NULL, NULL);
+    if (!check(span_terminal != NULL &&
+                   sakura_terminal_resize(span_terminal, 100, 1),
+               "C API span terminal setup failed")) {
+        sakura_terminal_free(span_terminal);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    char span_text[128];
+    size_t span_text_length = 0;
+    for (unsigned int index = 0; index < 31; ++index)
+        span_text[span_text_length++] = 'a';
+    span_text[span_text_length++] = (char)0xe7;
+    span_text[span_text_length++] = (char)0x95;
+    span_text[span_text_length++] = (char)0x8c;
+    for (unsigned int index = 0; index < 67; ++index)
+        span_text[span_text_length++] = 'b';
+    sakura_terminal_feed_output(span_terminal, span_text, span_text_length);
+    SakuraTerminalFrame *span_frame = sakura_terminal_take_frame(span_terminal);
+    if (!check(span_frame != NULL,
+               "C API did not return bounded span frame")) {
+        sakura_terminal_frame_free(span_frame);
+        sakura_terminal_free(span_terminal);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    const size_t span_count =
+        sakura_terminal_frame_row_run_count(span_frame, 0);
+    unsigned int next_left = 0;
+    for (size_t index = 0; index < span_count; ++index) {
+        SakuraTerminalRunView span;
+        if (!check(sakura_terminal_frame_row_run(span_frame, 0, index, &span) &&
+                       span.left == next_left && span.cell_count > 0 &&
+                       span.cell_count <= SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS,
+                   "C API emitted an invalid bounded run span")) {
+            sakura_terminal_frame_free(span_frame);
+            sakura_terminal_free(span_terminal);
+            sakura_terminal_free(terminal);
+            return 1;
+        }
+        SakuraTerminalCellView first_cell;
+        SakuraTerminalCellView last_cell;
+        if (!check(sakura_terminal_frame_cell(
+                       span_frame, span.left, 0, &first_cell) &&
+                       first_cell.width != 0 &&
+                       sakura_terminal_frame_cell(
+                           span_frame, span.left + span.cell_count - 1, 0,
+                           &last_cell) && last_cell.width != 2,
+                   "C API split a wide glyph at a run boundary")) {
+            sakura_terminal_frame_free(span_frame);
+            sakura_terminal_free(span_terminal);
+            sakura_terminal_free(terminal);
+            return 1;
+        }
+        next_left += span.cell_count;
+    }
+    if (!check(span_count >= 4 && next_left == 100,
+               "C API bounded run spans did not cover the row")) {
+        sakura_terminal_frame_free(span_frame);
+        sakura_terminal_free(span_terminal);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    sakura_terminal_frame_free(span_frame);
+    sakura_terminal_free(span_terminal);
+
     sakura_terminal_feed_output(terminal, "\033]2;c-api title\007", 16);
     frame = sakura_terminal_take_frame(terminal);
     const int title_frame_info_ok =

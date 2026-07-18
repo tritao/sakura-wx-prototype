@@ -23,7 +23,7 @@ METRICS = (
     "glyph_cache_bytes",
     "glyph_cache_peak_bytes",
     "glyph_cache_bypasses",
-    "glyph_cache_chunked_runs",
+    "glyph_spans",
     "glyph_cache_evictions",
 )
 

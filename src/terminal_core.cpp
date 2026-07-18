@@ -56,6 +56,9 @@ struct PackedGrid {
     std::vector<std::shared_ptr<const PackedRow>> row_data;
 };
 
+constexpr unsigned int kPackedRunSpanMaxCells =
+    SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS;
+
 struct PackedFrame {
     uint64_t generation = 0;
     bool changed = false;
@@ -397,7 +400,20 @@ private:
             row->cells[column].style_index = 0;
             row->cells[column].width = 1;
         }
-        row->runs.push_back({0, columns, 0, 0, columns});
+        for (unsigned int column = 0; column < columns; ++column) {
+            if (row->runs.empty() ||
+                row->runs.back().cell_count >= kPackedRunSpanMaxCells) {
+                row->runs.push_back({column, 1, 0,
+                                     row->cells[column].text_offset,
+                                     row->cells[column].text_length});
+            } else {
+                PackedRun& run = row->runs.back();
+                ++run.cell_count;
+                const uint32_t end = row->cells[column].text_offset +
+                    row->cells[column].text_length;
+                run.text_length = end - run.text_offset;
+            }
+        }
         return row;
     }
 
@@ -604,8 +620,15 @@ private:
 
             for (unsigned int column = 0; column < grid.columns; ++column) {
                 const PackedCell& cell = row->cells[column];
+                const bool starts_wide_glyph = cell.width > 1;
+                const bool would_end_with_wide_glyph =
+                    !row->runs.empty() && starts_wide_glyph &&
+                    row->runs.back().cell_count + 1 ==
+                        kPackedRunSpanMaxCells;
                 if (row->runs.empty() ||
-                    row->runs.back().style_index != cell.style_index) {
+                    row->runs.back().style_index != cell.style_index ||
+                    row->runs.back().cell_count >= kPackedRunSpanMaxCells ||
+                    would_end_with_wide_glyph) {
                     row->runs.push_back({column, 1, cell.style_index,
                                          cell.text_offset, cell.text_length});
                 } else {
