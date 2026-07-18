@@ -48,6 +48,8 @@ private:
     void OnSize(wxSizeEvent& event);
     void OnChar(wxKeyEvent& event);
     void OnMouseWheel(wxMouseEvent& event);
+    void QueueWheelScroll(const wxMouseEvent& event);
+    bool FlushWheelScroll();
     std::pair<unsigned int, unsigned int> CellAt(const wxPoint& point) const;
     static unsigned char MouseModifiers(const wxMouseEvent& event);
     bool ForwardMouse(const wxMouseEvent& event, unsigned int button,

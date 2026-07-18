@@ -316,6 +316,8 @@ public:
     bool pointer_down_ = false;
     bool mouse_reporting_gesture_ = false;
     bool trace_metrics_ = false;
+    int wheel_rotation_ = 0;
+    int pending_wheel_lines_ = 0;
     int click_count_ = 0;
     wxPoint pointer_down_position_;
     unsigned int selection_anchor_column_ = 0;
@@ -1050,11 +1052,56 @@ void WxTerminalCtrl::OnMouseWheel(wxMouseEvent& event)
             SAKURA_TERMINAL_MOUSE_PRESSED, MouseModifiers(event));
         return;
     }
-    if (event.GetWheelRotation() > 0)
-        sakura_terminal_scroll_page_up(impl_->core_, 3);
-    else if (event.GetWheelRotation() < 0)
-        sakura_terminal_scroll_page_down(impl_->core_, 3);
-    RequestFrameRefresh();
+    QueueWheelScroll(event);
+}
+
+void WxTerminalCtrl::QueueWheelScroll(const wxMouseEvent& event)
+{
+    impl_->AssertOwnerThread();
+    const int rotation = event.GetWheelRotation();
+    if (rotation == 0)
+        return;
+
+    constexpr int kWheelDelta = 120;
+    const int event_delta = std::max(1, event.GetWheelDelta());
+    const int normalized_rotation = static_cast<int>(
+        (static_cast<int64_t>(rotation) * kWheelDelta) / event_delta);
+    impl_->wheel_rotation_ += normalized_rotation;
+    ++impl_->paint_metrics_.wheel_events;
+
+    const int actions = impl_->wheel_rotation_ / kWheelDelta;
+    if (actions == 0) {
+        ++impl_->paint_metrics_.wheel_partial_events;
+        return;
+    }
+    impl_->wheel_rotation_ -= actions * kWheelDelta;
+
+    const int lines_per_action = event.IsPageScroll()
+        ? std::max(1, impl_->rows_ > 1
+            ? static_cast<int>(impl_->rows_ - 1) : 1)
+        : std::max(1, event.GetLinesPerAction());
+    constexpr int kMaxPendingWheelLines = 64;
+    impl_->pending_wheel_lines_ = std::clamp(
+        impl_->pending_wheel_lines_ + actions * lines_per_action,
+        -kMaxPendingWheelLines, kMaxPendingWheelLines);
+}
+
+bool WxTerminalCtrl::FlushWheelScroll()
+{
+    impl_->AssertOwnerThread();
+    if (impl_->pending_wheel_lines_ == 0)
+        return false;
+
+    // Drain one cell row per UI tick. Multiple high-resolution events are
+    // still coalesced, but a normal three-line wheel action is presented as
+    // three 60 Hz updates instead of one large jump.
+    const int lines = impl_->pending_wheel_lines_ > 0 ? 1 : -1;
+    impl_->pending_wheel_lines_ -= lines;
+    sakura_terminal_scroll_lines(impl_->core_, lines);
+    ++impl_->paint_metrics_.wheel_scroll_updates;
+    impl_->paint_metrics_.wheel_lines_scrolled +=
+        static_cast<uint64_t>(std::abs(lines));
+    return true;
 }
 
 std::pair<unsigned int, unsigned int>
@@ -1387,6 +1434,8 @@ void WxTerminalCtrl::UpdateTransportStatus()
 void WxTerminalCtrl::OnTimer(wxTimerEvent&)
 {
     impl_->AssertOwnerThread();
+    if (FlushWheelScroll())
+        RequestFrameRefresh();
     if (impl_->selection_dragging_ && impl_->auto_scroll_direction_ != 0) {
         sakura_terminal_scroll_lines(impl_->core_,
                                      impl_->auto_scroll_direction_ < 0 ? 1 : -1);
@@ -1428,6 +1477,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          "mouse=%llu/%llu modes=%llu "
                          "paint=%llu full/%llu partial cells=%llu "
                          "paint-us=%llu/%llu/%llu max=%llu refresh=%llu/%llu dirty "
+                         "wheel=%llu partial=%llu updates=%llu lines=%llu "
                          "glyph-cache=%llu/%llu bypass=%llu evictions=%llu "
                          "bytes=%llu/%llu "
                          "transport-read=%lluB/%llu "
@@ -1454,6 +1504,10 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          static_cast<unsigned long long>(impl_->paint_metrics_.max_paint_time_us),
                          static_cast<unsigned long long>(impl_->paint_metrics_.refresh_requests),
                          static_cast<unsigned long long>(impl_->paint_metrics_.dirty_refresh_requests),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.wheel_events),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.wheel_partial_events),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.wheel_scroll_updates),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.wheel_lines_scrolled),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_hits),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_misses),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_bypasses),

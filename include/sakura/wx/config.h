@@ -40,6 +40,10 @@ struct WxPaintMetrics {
     uint64_t refresh_requests = 0;
     uint64_t full_refresh_requests = 0;
     uint64_t dirty_refresh_requests = 0;
+    uint64_t wheel_events = 0;
+    uint64_t wheel_partial_events = 0;
+    uint64_t wheel_scroll_updates = 0;
+    uint64_t wheel_lines_scrolled = 0;
     uint64_t glyph_run_cache_hits = 0;
     uint64_t glyph_run_cache_misses = 0;
     uint64_t glyph_run_cache_bypasses = 0;
