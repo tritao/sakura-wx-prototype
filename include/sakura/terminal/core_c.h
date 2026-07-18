@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SAKURA_TERMINAL_CORE_ABI_VERSION 1u
+#define SAKURA_TERMINAL_CORE_ABI_VERSION 2u
 #define SAKURA_TERMINAL_INVALID UINT32_MAX
 
 typedef struct SakuraTerminal SakuraTerminal;
@@ -68,6 +68,10 @@ typedef struct SakuraTerminalFrameInfo {
     uint64_t generation;
     int changed;
     int full_repaint;
+    /* Signed visible-content movement. Positive means rows moved toward the
+     * top of the viewport; negative means rows moved toward the bottom. A
+     * non-zero value is a hint for framebuffer scroll/blit optimization. */
+    int scroll_delta;
     unsigned int columns;
     unsigned int rows;
     unsigned int cursor_x;

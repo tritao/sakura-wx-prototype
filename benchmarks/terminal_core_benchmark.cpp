@@ -175,12 +175,13 @@ BenchmarkResult RunScenario(ScenarioKind scenario)
             update = MakePartialUpdate(iteration, false);
         else if (scenario == ScenarioKind::Unicode)
             update = MakePartialUpdate(iteration, true);
+        else if (scenario == ScenarioKind::Scrollback)
+            update = "scroll line=" + std::to_string(iteration) +
+                " payload=0123456789abcdefghijklmnopqrstuvwxyz\r\n";
 
         const auto feed_start = Clock::now();
         if (!update.empty())
             sakura_terminal_feed_output(terminal, update.data(), update.size());
-        else if (scenario == ScenarioKind::Scrollback)
-            sakura_terminal_scroll_lines(terminal, 1);
         const auto feed_finish = Clock::now();
         result.feed_us += std::chrono::duration<double, std::micro>(
             feed_finish - feed_start).count();

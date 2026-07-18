@@ -62,12 +62,18 @@ target_compile_features(sakura_libtsm PRIVATE c_std_99)
 
 add_library(sakura_terminal_core STATIC
     src/terminal_core.cpp
+    src/tsm_scroll_observer.c
 )
 set_target_properties(sakura_terminal_core PROPERTIES EXPORT_NAME TerminalCoreC)
 target_include_directories(sakura_terminal_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+        "${LIBTSM_ROOT}/src/tsm"
+        "${LIBTSM_ROOT}/src/shared"
+        "${LIBTSM_ROOT}/external"
+        "${LIBTSM_ROOT}/external/wcwidth"
 )
 target_link_libraries(sakura_terminal_core PUBLIC sakura_libtsm)
 

@@ -346,14 +346,33 @@ int main()
         scroll_core.FeedOutput(scroll_output.data(), scroll_output.size());
         const TestSnapshot bottom_snapshot = scroll_core.TakeSnapshot();
         scroll_core.ScrollLines(1);
-        const TestSnapshot up_snapshot = scroll_core.TakeSnapshot();
+        const TestFrame up_frame = scroll_core.TakeFrame();
+        const TestSnapshot up_snapshot = *up_frame.snapshot;
         Check(bottom_snapshot.cells[7].codepoint != up_snapshot.cells[7].codepoint,
               "scrolling one line did not change the visible screen");
+        Check(up_frame.scroll_delta != 0,
+              "viewport scroll delta was not exposed");
         scroll_core.ScrollLines(-1);
         const TestSnapshot restored_snapshot = scroll_core.TakeSnapshot();
         Check(restored_snapshot.cells[7].codepoint ==
                   bottom_snapshot.cells[7].codepoint,
               "scrolling back down did not restore the visible screen");
+
+        TestTerminal output_scroll_core(nullptr);
+        Check(output_scroll_core.Resize(10, 3),
+              "output scroll core resize failed");
+        output_scroll_core.TakeFrame();
+        output_scroll_core.FeedOutput("0\r\n1\r\n2", 7);
+        output_scroll_core.TakeFrame();
+        output_scroll_core.FeedOutput("\r\n3", 3);
+        const TestFrame output_scroll_frame = output_scroll_core.TakeFrame();
+        Check(output_scroll_frame.changed &&
+                  !output_scroll_frame.full_repaint &&
+                  output_scroll_frame.scroll_delta == 1,
+              "full-screen output scroll was not exposed as a row delta");
+        Check(output_scroll_frame.dirty.top <= 2 &&
+                  output_scroll_frame.dirty.bottom == 3,
+              "output scroll did not invalidate the exposed rows");
 
         std::cout << "terminal_core: PASS\n";
         return 0;

@@ -31,6 +31,28 @@ uint32_t ColorKey(const std::array<uint8_t, 3>& color)
            static_cast<uint32_t>(color[2]);
 }
 
+void ScrollFramebuffer(wxMemoryDC& dc, int delta, unsigned int columns,
+                       unsigned int rows, int cell_width, int cell_height)
+{
+    if (delta == 0 || columns == 0 || rows == 0 || cell_width <= 0 ||
+        cell_height <= 0)
+        return;
+    const unsigned int distance = std::min(
+        static_cast<unsigned int>(std::abs(delta)), rows);
+    if (distance >= rows)
+        return;
+
+    const int width = static_cast<int>(columns) * cell_width;
+    const int height = static_cast<int>(rows - distance) * cell_height;
+    if (delta > 0) {
+        dc.Blit(0, 0, width, height, &dc, 0,
+                static_cast<int>(distance) * cell_height);
+    } else {
+        dc.Blit(0, static_cast<int>(distance) * cell_height, width, height,
+                &dc, 0, 0);
+    }
+}
+
 } // namespace
 
 class WxTerminalCtrl::Impl {
@@ -246,10 +268,12 @@ void WxTerminalCtrl::RequestFrameRefresh()
 
     SakuraTerminalDirtyRegion dirty = info.dirty;
     bool full_repaint = info.full_repaint != 0;
+    int scroll_delta = info.scroll_delta;
     if (full_repaint)
         dirty = {0, 0, info.columns, info.rows};
 
     if (impl_->pending_frame_ != nullptr) {
+        scroll_delta += impl_->pending_info_.scroll_delta;
         if (impl_->pending_full_repaint_)
             dirty = {0, 0, info.columns, info.rows};
         else if (dirty.left < dirty.right && dirty.top < dirty.bottom) {
@@ -267,6 +291,7 @@ void WxTerminalCtrl::RequestFrameRefresh()
     }
     impl_->pending_frame_ = frame;
     impl_->pending_info_ = info;
+    impl_->pending_info_.scroll_delta = scroll_delta;
     impl_->pending_full_repaint_ = full_repaint;
     impl_->pending_dirty_ = dirty;
     impl_->pending_info_.full_repaint = full_repaint ? 1 : 0;
@@ -562,6 +587,10 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         RenderFrame(framebuffer_dc, frame, info, full_region, &painted_cells);
         impl_->framebuffer_valid_ = true;
     } else if (info.changed) {
+        if (info.scroll_delta != 0)
+            ScrollFramebuffer(framebuffer_dc, info.scroll_delta, info.columns,
+                              info.rows, impl_->cell_width_,
+                              impl_->cell_height_);
         ++impl_->paint_metrics_.partial_repaints;
         RenderFrame(framebuffer_dc, frame, info, dirty, &painted_cells);
     }

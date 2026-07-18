@@ -2,11 +2,14 @@
 
 #include <tsm/libtsm.h>
 
+#include "tsm_scroll_observer.h"
+
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -57,6 +60,7 @@ struct PackedFrame {
     uint64_t generation = 0;
     bool changed = false;
     bool full_repaint = false;
+    int scroll_delta = 0;
     SakuraTerminalDirtyRegion dirty {};
     std::vector<SakuraTerminalDirtySpan> dirty_spans;
     unsigned int columns = 0;
@@ -135,6 +139,7 @@ public:
         tsm_vte_set_mouse_cb(vte_, &Impl::VteMouse, this);
         tsm_vte_set_osc_cb(vte_, &Impl::VteOsc, this);
         tsm_vte_set_palette(vte_, "base16-dark");
+        ResetScreenObservation();
     }
 
     ~Impl()
@@ -163,12 +168,17 @@ public:
     void FeedOutput(const char* data, std::size_t length)
     {
         if (vte_ != nullptr && data != nullptr && length > 0) {
+            if (observed_lines_.size() != sakura_tsm_screen_height(screen_))
+                ResetScreenObservation();
+            const std::vector<std::uintptr_t> previous_lines = observed_lines_;
+            const bool previous_alternate = observed_alternate_screen_;
             metrics_.output_bytes += length;
             ++metrics_.output_chunks;
             last_output_time_ = std::chrono::steady_clock::now();
             output_waiting_for_render_ = true;
             TrackCursorStyle(data, length);
             tsm_vte_input(vte_, data, length);
+            ObserveScreenScroll(previous_lines, previous_alternate);
         }
     }
 
@@ -198,7 +208,67 @@ private:
         unsigned int cursor_x = 0;
         unsigned int cursor_y = 0;
         uint64_t* decoded_cells = nullptr;
+        bool reuse_scrolled_rows = false;
     };
+
+    void ResetScreenObservation()
+    {
+        observed_lines_.clear();
+        if (screen_ == nullptr)
+            return;
+        const unsigned int height = sakura_tsm_screen_height(screen_);
+        observed_lines_.resize(height);
+        for (unsigned int row = 0; row < height; ++row)
+            observed_lines_[row] = reinterpret_cast<std::uintptr_t>(
+                sakura_tsm_screen_line(screen_, row));
+        observed_alternate_screen_ = sakura_tsm_screen_is_alternate(screen_) != 0;
+    }
+
+    static int DetectFullScreenShift(
+        const std::vector<std::uintptr_t>& previous_lines,
+        const struct tsm_screen* screen)
+    {
+        const unsigned int height = sakura_tsm_screen_height(screen);
+        if (screen == nullptr || previous_lines.size() != height || height < 2)
+            return 0;
+
+        for (unsigned int delta = 1; delta < height; ++delta) {
+            bool moved_up = true;
+            bool moved_down = true;
+            for (unsigned int row = 0; row < height - delta; ++row) {
+                if (reinterpret_cast<std::uintptr_t>(
+                        sakura_tsm_screen_line(screen, row)) !=
+                    previous_lines[row + delta])
+                    moved_up = false;
+                if (reinterpret_cast<std::uintptr_t>(
+                        sakura_tsm_screen_line(screen, row + delta)) !=
+                    previous_lines[row])
+                    moved_down = false;
+                if (!moved_up && !moved_down)
+                    break;
+            }
+            if (moved_up)
+                return static_cast<int>(delta);
+            if (moved_down)
+                return -static_cast<int>(delta);
+        }
+        return 0;
+    }
+
+    void ObserveScreenScroll(
+        const std::vector<std::uintptr_t>& previous_lines,
+        bool previous_alternate)
+    {
+        const bool alternate = screen_ != nullptr &&
+            sakura_tsm_screen_is_alternate(screen_) != 0;
+        if (screen_ != nullptr && previous_alternate == alternate &&
+            !sakura_tsm_screen_is_scrollback(screen_)) {
+            const int delta = DetectFullScreenShift(previous_lines, screen_);
+            if (delta != 0)
+                pending_content_scroll_delta_ += delta;
+        }
+        ResetScreenObservation();
+    }
 
     static bool DirtyEmpty(const SakuraTerminalDirtyRegion& dirty)
     {
@@ -347,6 +417,45 @@ private:
             grid.row_data.push_back(BlankRow(columns));
     }
 
+    static void RotatePackedRows(PackedGrid& grid, int delta)
+    {
+        if (delta == 0 || grid.rows == 0)
+            return;
+        std::vector<std::shared_ptr<const PackedRow>> rotated(grid.rows);
+        for (unsigned int row = 0; row < grid.rows; ++row) {
+            const int source = static_cast<int>(row) + delta;
+            if (source >= 0 && source < static_cast<int>(grid.rows))
+                rotated[row] = grid.row_data[static_cast<unsigned int>(source)];
+            else
+                rotated[row] = BlankRow(grid.columns);
+        }
+        grid.row_data = std::move(rotated);
+    }
+
+    static void IncludeRows(SakuraTerminalDirtyRegion& dirty,
+                            std::vector<SakuraTerminalDirtySpan>& spans,
+                            unsigned int top, unsigned int bottom,
+                            unsigned int columns, unsigned int rows)
+    {
+        top = std::min(top, rows);
+        bottom = std::min(bottom, rows);
+        if (columns == 0 || top >= bottom)
+            return;
+        if (DirtyEmpty(dirty)) {
+            dirty.left = 0;
+            dirty.top = top;
+            dirty.right = columns;
+            dirty.bottom = bottom;
+        } else {
+            dirty.left = 0;
+            dirty.top = std::min(dirty.top, top);
+            dirty.right = std::max(dirty.right, columns);
+            dirty.bottom = std::max(dirty.bottom, bottom);
+        }
+        for (unsigned int row = top; row < bottom; ++row)
+            IncludeSpan(spans, row, 0, columns);
+    }
+
     static int DrawPackedCell(struct tsm_screen*, uint64_t,
                               const uint32_t* codepoints, std::size_t length,
                               unsigned int width, unsigned int column,
@@ -369,6 +478,47 @@ private:
         if (!changed)
             return 0;
 
+        const PackedStyle style = PackedStyleFor(attr);
+        const uint16_t style_index = StyleIndex(*context->grid, style);
+        std::array<char, 128> encoded_text {};
+        std::size_t encoded_length = 0;
+        for (std::size_t index = 0; index < length; ++index) {
+            char utf8[8] {};
+            const std::size_t utf8_length = tsm_ucs4_to_utf8(
+                codepoints[index], utf8);
+            if (encoded_length + utf8_length > encoded_text.size())
+                return 0;
+            std::memcpy(encoded_text.data() + encoded_length,
+                        utf8, utf8_length);
+            encoded_length += utf8_length;
+        }
+        if (length == 0 && width > 0)
+            encoded_text[encoded_length++] = ' ';
+
+        if (context->reuse_scrolled_rows &&
+            row < context->grid->row_data.size() &&
+            context->grid->row_data[row] != nullptr) {
+            const PackedRow& cached_row = *context->grid->row_data[row];
+            if (column < cached_row.cells.size()) {
+                const PackedCell& cached_cell = cached_row.cells[column];
+                const bool text_valid =
+                    cached_cell.text_offset <= cached_row.text.size() &&
+                    cached_cell.text_length <= cached_row.text.size() -
+                                               cached_cell.text_offset;
+                const bool text_matches = text_valid &&
+                    cached_cell.text_length == encoded_length &&
+                    (encoded_length == 0 || std::memcmp(
+                        cached_row.text.data() + cached_cell.text_offset,
+                        encoded_text.data(), encoded_length) == 0);
+                if (cached_cell.style_index == style_index &&
+                    cached_cell.width == width &&
+                    cached_cell.codepoint ==
+                        (length == 0 ? (width == 0 ? 0 : ' ') : codepoints[0]) &&
+                    text_matches)
+                    return 0;
+            }
+        }
+
         if (context->decoded_cells != nullptr)
             ++*context->decoded_cells;
         IncludeDirty(context->dirty, column, row, width,
@@ -376,8 +526,6 @@ private:
         IncludeCellSpan(context->dirty_spans, column, row, width,
                         context->grid->columns, context->grid->rows);
 
-        const PackedStyle style = PackedStyleFor(attr);
-        const uint16_t style_index = StyleIndex(*context->grid, style);
         PackedChangedCell changed_cell;
         changed_cell.column = column;
         changed_cell.row = row;
@@ -388,14 +536,7 @@ private:
         changed_cell.style_index = style_index;
         changed_cell.text_offset = static_cast<uint32_t>(
             context->changed_text.size());
-        for (std::size_t index = 0; index < length; ++index) {
-            char utf8[8] {};
-            const std::size_t utf8_length = tsm_ucs4_to_utf8(
-                codepoints[index], utf8);
-            context->changed_text.append(utf8, utf8_length);
-        }
-        if (length == 0 && width > 0)
-            context->changed_text.push_back(' ');
+        context->changed_text.append(encoded_text.data(), encoded_length);
         changed_cell.text_length = static_cast<uint32_t>(
             context->changed_text.size() - changed_cell.text_offset);
         context->changed_cells.push_back(changed_cell);
@@ -610,6 +751,11 @@ private:
         const unsigned int rows = tsm_screen_get_height(screen_);
         EnsurePackedGrid(grid, columns, rows);
 
+        const int content_scroll_delta = pending_content_scroll_delta_;
+        pending_content_scroll_delta_ = 0;
+        const int viewport_scroll_delta = pending_viewport_scroll_delta_;
+        pending_viewport_scroll_delta_ = 0;
+
         auto frame = std::make_shared<PackedFrame>();
         frame->columns = columns;
         frame->rows = rows;
@@ -620,9 +766,20 @@ private:
         frame->cursor_style = cursor_style_;
         frame->alternate_screen = (tsm_screen_get_flags(screen_) &
                                    TSM_SCREEN_ALTERNATE) != 0;
+        frame->scroll_delta = content_scroll_delta != 0
+            ? content_scroll_delta : viewport_scroll_delta;
         frame->full_repaint = !packed_frame_valid_ ||
             (columns != packed_last_columns_ || rows != packed_last_rows_ ||
              frame->alternate_screen != packed_last_alternate_screen_);
+
+        const bool reuse_scrolled_rows = !frame->full_repaint &&
+            content_scroll_delta != 0 && viewport_scroll_delta == 0 &&
+            !sakura_tsm_screen_is_scrollback(screen_) &&
+            std::abs(content_scroll_delta) < static_cast<int>(rows);
+        if (content_scroll_delta != 0 && !reuse_scrolled_rows)
+            frame->full_repaint = true;
+        if (reuse_scrolled_rows)
+            RotatePackedRows(grid, content_scroll_delta);
 
         PackedDrawContext context;
         context.impl = this;
@@ -639,6 +796,7 @@ private:
         context.cursor_x = frame->cursor_x;
         context.cursor_y = frame->cursor_y;
         context.decoded_cells = &metrics_.frame_cells_decoded;
+        context.reuse_scrolled_rows = reuse_scrolled_rows;
         const uint64_t decoded_before = metrics_.frame_cells_decoded;
         const tsm_age_t since = frame->full_repaint ? 0 : packed_last_draw_age_;
         const tsm_age_t age = tsm_screen_draw_since(
@@ -658,6 +816,17 @@ private:
                             packed_last_cursor_y_, 1, columns, rows);
             IncludeCellSpan(context.dirty_spans, frame->cursor_x,
                             frame->cursor_y, 1, columns, rows);
+        }
+
+        if (reuse_scrolled_rows) {
+            const unsigned int distance = static_cast<unsigned int>(
+                std::abs(content_scroll_delta));
+            if (content_scroll_delta > 0)
+                IncludeRows(context.dirty, context.dirty_spans,
+                            rows - distance, rows, columns, rows);
+            else
+                IncludeRows(context.dirty, context.dirty_spans,
+                            0, distance, columns, rows);
         }
 
         if (age == 0) {
@@ -720,6 +889,10 @@ private:
     std::chrono::steady_clock::time_point last_output_time_;
     bool output_waiting_for_render_ = false;
     std::thread::id owner_thread_ = std::this_thread::get_id();
+    std::vector<std::uintptr_t> observed_lines_;
+    bool observed_alternate_screen_ = false;
+    int pending_content_scroll_delta_ = 0;
+    int pending_viewport_scroll_delta_ = 0;
     std::shared_ptr<PackedGrid> packed_grid_cache_;
     bool packed_frame_valid_ = false;
     tsm_age_t packed_last_draw_age_ = 0;
@@ -787,8 +960,14 @@ bool TerminalBackend::Resize(unsigned int columns, unsigned int rows)
 {
     if (impl_ != nullptr)
         impl_->AssertOwnerThread();
-    return impl_ != nullptr && impl_->screen_ != nullptr &&
-           tsm_screen_resize(impl_->screen_, columns, rows) == 0;
+    const bool resized = impl_ != nullptr && impl_->screen_ != nullptr &&
+        tsm_screen_resize(impl_->screen_, columns, rows) == 0;
+    if (resized) {
+        impl_->ResetScreenObservation();
+        impl_->pending_content_scroll_delta_ = 0;
+        impl_->pending_viewport_scroll_delta_ = 0;
+    }
+    return resized;
 }
 
 void TerminalBackend::FeedOutput(const char* data, std::size_t length)
@@ -850,16 +1029,26 @@ void TerminalBackend::ScrollPageUp(unsigned int pages)
 {
     if (impl_ != nullptr)
         impl_->AssertOwnerThread();
-    if (impl_ != nullptr && impl_->screen_ != nullptr)
+    if (impl_ != nullptr && impl_->screen_ != nullptr) {
+        const unsigned int before = tsm_screen_sb_get_line_pos(impl_->screen_);
         tsm_screen_sb_page_up(impl_->screen_, pages);
+        const unsigned int after = tsm_screen_sb_get_line_pos(impl_->screen_);
+        impl_->pending_viewport_scroll_delta_ +=
+            static_cast<int>(after) - static_cast<int>(before);
+    }
 }
 
 void TerminalBackend::ScrollPageDown(unsigned int pages)
 {
     if (impl_ != nullptr)
         impl_->AssertOwnerThread();
-    if (impl_ != nullptr && impl_->screen_ != nullptr)
+    if (impl_ != nullptr && impl_->screen_ != nullptr) {
+        const unsigned int before = tsm_screen_sb_get_line_pos(impl_->screen_);
         tsm_screen_sb_page_down(impl_->screen_, pages);
+        const unsigned int after = tsm_screen_sb_get_line_pos(impl_->screen_);
+        impl_->pending_viewport_scroll_delta_ +=
+            static_cast<int>(after) - static_cast<int>(before);
+    }
 }
 
 void TerminalBackend::ScrollLines(int lines)
@@ -868,10 +1057,14 @@ void TerminalBackend::ScrollLines(int lines)
         impl_->AssertOwnerThread();
     if (impl_ == nullptr || impl_->screen_ == nullptr || lines == 0)
         return;
+    const unsigned int before = tsm_screen_sb_get_line_pos(impl_->screen_);
     if (lines > 0)
         tsm_screen_sb_up(impl_->screen_, static_cast<unsigned int>(lines));
     else
         tsm_screen_sb_down(impl_->screen_, static_cast<unsigned int>(-lines));
+    const unsigned int after = tsm_screen_sb_get_line_pos(impl_->screen_);
+    impl_->pending_viewport_scroll_delta_ +=
+        static_cast<int>(after) - static_cast<int>(before);
 }
 
 void TerminalBackend::StartSelection(unsigned int column, unsigned int row)
@@ -1259,6 +1452,7 @@ int sakura_terminal_frame_info(const SakuraTerminalFrame* frame,
     info->generation = source.generation;
     info->changed = source.changed;
     info->full_repaint = source.full_repaint;
+    info->scroll_delta = source.scroll_delta;
     info->columns = source.columns;
     info->rows = source.rows;
     info->cursor_x = source.cursor_x;

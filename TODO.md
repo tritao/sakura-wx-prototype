@@ -29,6 +29,8 @@ cross-platform terminal library and a Sakura frontend foundation.
   - Reuse unchanged terminal cells through a copy-on-write snapshot cache.
   - Use a wx backing bitmap so unchanged cells are not redrawn.
   - Preserve correct invalidation for scrolling, selection, cursor, and resize.
+  - Reuse packed row objects and expose scroll-delta hints for full-screen
+    output scrolling.
 
 - [ ] Add glyph caching.
   - [x] Cache UTF-8 conversion and font variants in the wx renderer.

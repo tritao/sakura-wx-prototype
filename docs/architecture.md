@@ -25,7 +25,9 @@ and `SakuraTerminalFrame` are opaque, caller-owned handles. A frame owns an
 immutable view of the rendered screen; cell text is borrowed from that frame
 and must not be retained after `sakura_terminal_frame_free()`.
 
-`SakuraTerminalFrameInfo` exposes the complete frame metadata and the frame
+`SakuraTerminalFrameInfo` exposes the complete frame metadata, including a
+signed scroll delta for full-screen content movement. A frontend may blit its
+framebuffer by that delta and repaint the newly exposed dirty spans. The frame
 also exposes coalesced row-local dirty spans. Native frontends can request
 cached UTF-8
 row runs with packed style identifiers and resolved RGB attributes, avoiding

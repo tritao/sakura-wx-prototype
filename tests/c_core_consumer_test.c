@@ -39,7 +39,8 @@ int main(void)
         sakura_terminal_free(terminal);
         return 1;
     }
-    if (!check(info.columns == 4 && info.rows == 1 && info.full_repaint,
+    if (!check(info.columns == 4 && info.rows == 1 && info.full_repaint &&
+                   info.scroll_delta == 0,
                "C API frame dimensions or repaint state were wrong")) {
         sakura_terminal_frame_free(frame);
         sakura_terminal_free(terminal);

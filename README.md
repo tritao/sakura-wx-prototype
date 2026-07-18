@@ -30,7 +30,8 @@ The reusable library targets are:
 
 The C ABI is the canonical integration boundary for all frontends. It
 uses opaque terminal and frame handles, explicit release functions, immutable
-frame views, cursor/mode metadata, and row-local dirty spans. The C++
+frame views, cursor/mode metadata, scroll-delta hints, and row-local dirty
+spans. The C++
 core implementation is private to the library. Native renderers can request
 cached UTF-8 row runs with packed style data via
 `sakura_terminal_frame_row_run_count()` and

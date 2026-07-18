@@ -47,6 +47,7 @@ struct TestFrame {
     uint64_t generation = 0;
     bool changed = false;
     bool full_repaint = false;
+    int scroll_delta = 0;
     TestDirtyRegion dirty;
     std::vector<SakuraTerminalDirtySpan> dirty_spans;
     std::shared_ptr<const TestSnapshot> snapshot;
@@ -180,6 +181,7 @@ public:
         result.generation = info.generation;
         result.changed = info.changed != 0;
         result.full_repaint = info.full_repaint != 0;
+        result.scroll_delta = info.scroll_delta;
         result.dirty = {info.dirty.left, info.dirty.top, info.dirty.right,
                         info.dirty.bottom};
         const std::size_t span_count =
