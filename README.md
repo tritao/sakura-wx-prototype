@@ -225,6 +225,26 @@ input, rendering latency, clipboard, transport queue, and resize counters:
 SAKURA_TRACE_METRICS=1 ./run.sh
 ```
 
+The wx frontend limits process output drained per event-loop tick to 8 KiB
+by default, keeping keyboard events such as Ctrl-C responsive during a noisy
+command like `yes`. Built-in transports also pause their reader at a 1 MiB
+queue high-water mark. Hosts can tune
+`TerminalConfig::output_bytes_per_tick`.
+For key-event diagnostics, use `SAKURA_TRACE_KEYS=1`.
+
+For one-gesture scroll diagnostics, enable timestamped native wheel events,
+viewport frame metadata, animation progress, paint cadence, and cancellation
+reasons:
+
+```sh
+SAKURA_TRACE_SCROLL=1 ./run.sh 2>scroll.log
+```
+
+Smooth scroll is enabled by default. The default animation uses 80 ms per
+line, capped at 240 ms per gesture, with constant pixel-rate movement. Hosts
+can tune `TerminalConfig::scroll_animation_ms_per_line` and
+`TerminalConfig::scroll_animation_max_ms` for a different feel.
+
 wxWidgets' platform dependencies vary by OS. On Windows, use the normal wxWidgets CMake/MSVC toolchain; on macOS, use Xcode command-line tools and CMake.
 
 ## Follow-up work

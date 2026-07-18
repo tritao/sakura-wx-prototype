@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -234,6 +235,9 @@ int RunAnimationTest()
     SendWheel(terminal, 120, 120, expected_lines);
     TickAndPaint(terminal);
     const WxPaintMetrics started = terminal.GetPaintMetrics();
+    std::vector<wxBitmap> animation_frames;
+    animation_frames.push_back(before);
+    animation_frames.push_back(CaptureClient(terminal));
     if (started.wheel_lines_scrolled !=
             initial.wheel_lines_scrolled + expected_lines ||
         started.scroll_animation_starts !=
@@ -244,28 +248,41 @@ int RunAnimationTest()
         return 7;
     }
 
-    wxMilliSleep(10);
-    TickAndPaint(terminal);
-    const WxPaintMetrics mid_animation = terminal.GetPaintMetrics();
-    const wxBitmap mid = CaptureClient(terminal);
-    if (mid_animation.scroll_animation_paints <=
-            started.scroll_animation_paints ||
-        mid_animation.scroll_animation_completions !=
-            initial.scroll_animation_completions ||
-        DifferentPixels(before, mid) == 0) {
-        std::cerr << "pixel animation was not visible in the wx client\n";
+    WxPaintMetrics sampled = started;
+    for (int sample = 0; sample < 8; ++sample) {
+        wxMilliSleep(10);
+        TickAndPaint(terminal);
+        sampled = terminal.GetPaintMetrics();
+        animation_frames.push_back(CaptureClient(terminal));
+        if (sampled.scroll_animation_completions !=
+                initial.scroll_animation_completions)
+            break;
+    }
+    if (animation_frames.size() < 4 ||
+        sampled.scroll_animation_frames <= initial.scroll_animation_frames) {
+        std::cerr << "pixel animation did not produce enough intermediate frames\n";
         return 8;
     }
+    for (std::size_t index = 2; index < animation_frames.size(); ++index) {
+        if (DifferentPixels(animation_frames[index - 1],
+                            animation_frames[index]) == 0) {
+            std::cerr << "consecutive animation frames were visually identical\n";
+            return 9;
+        }
+    }
 
-    wxMilliSleep(120);
-    TickAndPaint(terminal);
+    if (sampled.scroll_animation_completions ==
+            initial.scroll_animation_completions) {
+        wxMilliSleep(120);
+        TickAndPaint(terminal);
+    }
     const WxPaintMetrics completed = terminal.GetPaintMetrics();
     const wxBitmap after = CaptureClient(terminal);
     if (completed.scroll_animation_completions !=
             initial.scroll_animation_completions + 1 ||
         completed.scroll_animation_frames == initial.scroll_animation_frames) {
         std::cerr << "pixel scroll animation did not complete\n";
-        return 9;
+        return 10;
     }
 
     const wxSize cell_size = terminal.GetCellSize();
@@ -276,7 +293,7 @@ int RunAnimationTest()
         final_shift.matched * 100 < final_shift.compared * 80 ||
         std::abs(std::abs(final_shift.shift) - expected_pixel_shift) > 2) {
         std::cerr << "final wx pixels did not move by the expected number of rows\n";
-        return 10;
+        return 11;
     }
 
     return 0;

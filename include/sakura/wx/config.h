@@ -18,10 +18,13 @@ struct TerminalConfig {
     std::array<uint8_t, 3> background {16, 18, 20};
     std::array<uint8_t, 3> error_foreground {240, 180, 90};
     unsigned int timer_interval_ms = 16;
+    // Bound one UI-thread output drain so continuous writers cannot starve
+    // keyboard, paint, and shutdown events.
+    unsigned int output_bytes_per_tick = 8u * 1024u;
     unsigned int metrics_interval_ms = 1000;
     bool smooth_scrolling = true;
-    unsigned int scroll_animation_ms_per_line = 40;
-    unsigned int scroll_animation_max_ms = 120;
+    unsigned int scroll_animation_ms_per_line = 80;
+    unsigned int scroll_animation_max_ms = 240;
     bool start_transport = true;
     bool glyph_cache_enabled = true;
     bool glyph_cache_bypass_scroll = true;

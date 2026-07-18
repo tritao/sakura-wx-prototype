@@ -15,6 +15,8 @@
 
 namespace {
 
+constexpr uint64_t kMaximumQueuedOutputBytes = 1024u * 1024u;
+
 void RecordMaximum(std::atomic<uint64_t>& maximum, uint64_t value)
 {
     uint64_t current = maximum.load();
@@ -319,18 +321,35 @@ bool ConPtySession::Resize(unsigned int columns, unsigned int rows)
 #endif
 }
 
-std::vector<std::string> ConPtySession::TakeOutput()
+std::vector<std::string> ConPtySession::TakeOutput(std::size_t max_bytes)
 {
     std::deque<std::string> pending;
+    std::size_t taken = 0;
     {
         std::lock_guard lock(output_mutex_);
-        pending.swap(output_);
+        while (!output_.empty() && taken < max_bytes) {
+            std::string& chunk = output_.front();
+            const std::size_t available = max_bytes - taken;
+            if (chunk.size() <= available) {
+                taken += chunk.size();
+                pending.emplace_back(std::move(chunk));
+                output_.pop_front();
+            } else {
+                pending.emplace_back(chunk.data(), available);
+                chunk.erase(0, available);
+                taken += available;
+            }
+        }
     }
-    uint64_t bytes = 0;
-    for (const auto& chunk : pending)
-        bytes += chunk.size();
-    queued_bytes_.fetch_sub(bytes);
+    queued_bytes_.fetch_sub(static_cast<uint64_t>(taken));
     return std::vector<std::string>(pending.begin(), pending.end());
+}
+
+void ConPtySession::DiscardOutput()
+{
+    std::lock_guard lock(output_mutex_);
+    output_.clear();
+    queued_bytes_.store(0);
 }
 
 TransportMetrics ConPtySession::GetMetrics() const
@@ -361,8 +380,15 @@ void ConPtySession::ReadLoop(void* output_handle)
     auto output = static_cast<HANDLE>(output_handle);
     char buffer[8192];
     while (!stop_requested_.load()) {
+        const uint64_t queued = queued_bytes_.load();
+        if (queued >= kMaximumQueuedOutputBytes) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        const DWORD read_capacity = static_cast<DWORD>(std::min<uint64_t>(
+            sizeof(buffer), kMaximumQueuedOutputBytes - queued));
         DWORD received = 0;
-        if (!ReadFile(output, buffer, sizeof(buffer), &received, nullptr) ||
+        if (!ReadFile(output, buffer, read_capacity, &received, nullptr) ||
             received == 0)
             break;
         {

@@ -263,6 +263,14 @@ if(BUILD_TESTING)
         Sakura::WxTerminal
     )
 
+    add_executable(sakura_wx_keyboard_test
+        tests/wx_keyboard_test.cpp
+    )
+    target_link_libraries(sakura_wx_keyboard_test PRIVATE
+        wx::core
+        Sakura::WxTerminal
+    )
+
     add_executable(sakura_terminal_core_test
         tests/terminal_core_test.cpp
     )
@@ -334,6 +342,13 @@ if(BUILD_TESTING)
         target_link_libraries(sakura_pty_stress_test PRIVATE sakura_transport)
         add_test(NAME pty_stress COMMAND sakura_pty_stress_test)
         set_tests_properties(pty_stress PROPERTIES TIMEOUT 15)
+
+        add_executable(sakura_pty_interrupt_test
+            tests/pty_interrupt_test.cpp
+        )
+        target_link_libraries(sakura_pty_interrupt_test PRIVATE sakura_transport)
+        add_test(NAME pty_interrupt COMMAND sakura_pty_interrupt_test)
+        set_tests_properties(pty_interrupt PROPERTIES TIMEOUT 10)
     endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -350,6 +365,14 @@ if(BUILD_TESTING)
                     "$<TARGET_FILE:sakura_wx_scroll_test>"
         )
         set_tests_properties(wx_scroll PROPERTIES
+            TIMEOUT 10
+            ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
+        )
+        add_test(NAME wx_keyboard
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/wx_smoke_test.sh"
+                    "$<TARGET_FILE:sakura_wx_keyboard_test>"
+        )
+        set_tests_properties(wx_keyboard PROPERTIES
             TIMEOUT 10
             ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
         )
@@ -391,11 +414,17 @@ if(BUILD_TESTING)
         if(TARGET sakura_pty_stress_test)
             sakura_enable_sanitizers(sakura_pty_stress_test)
         endif()
+        if(TARGET sakura_pty_interrupt_test)
+            sakura_enable_sanitizers(sakura_pty_interrupt_test)
+        endif()
         if(TARGET sakura_wx_font_test)
             sakura_enable_sanitizers(sakura_wx_font_test)
         endif()
         if(TARGET sakura_wx_scroll_test)
             sakura_enable_sanitizers(sakura_wx_scroll_test)
+        endif()
+        if(TARGET sakura_wx_keyboard_test)
+            sakura_enable_sanitizers(sakura_wx_keyboard_test)
         endif()
         sakura_enable_sanitizers(sakura_transport_smoke_test)
         sakura_enable_sanitizers(sakura_transport_lifecycle_test)

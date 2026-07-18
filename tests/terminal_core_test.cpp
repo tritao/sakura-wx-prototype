@@ -103,6 +103,22 @@ int main()
         }
         Check(frame_core.GetMetrics().frame_cells_reused > 20,
               "dirty frame did not retain unchanged cells");
+
+        TestTerminal repeated_line_core(nullptr);
+        Check(repeated_line_core.Resize(40, 8),
+              "repeated-line resize failed");
+        repeated_line_core.TakeFrame();
+        std::string repeated_lines;
+        for (unsigned int line = 0; line < 512; ++line)
+            repeated_lines += "y\r\n";
+        repeated_line_core.FeedOutput(repeated_lines.data(),
+                                      repeated_lines.size());
+        const TestFrame repeated_line_frame = repeated_line_core.TakeFrame();
+        Check(repeated_line_frame.changed &&
+                  repeated_line_frame.snapshot != nullptr &&
+                  CellAt(*repeated_line_frame.snapshot, 0, 0).codepoint == 'y',
+              "repeated newline output did not produce a changed frame");
+
         const char* frame_title = "\x1b]2;frame title\x07";
         const uint64_t decoded_before_title =
             frame_core.GetMetrics().frame_cells_decoded;

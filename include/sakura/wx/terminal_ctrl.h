@@ -52,7 +52,7 @@ private:
     void QueueWheelScroll(const wxMouseEvent& event);
     bool FlushWheelScroll();
     void BeginScrollAnimation(const SakuraTerminalFrameInfo& info);
-    void CancelScrollAnimation(bool forced);
+    void CancelScrollAnimation(bool forced, const char* reason = nullptr);
     bool AdvanceScrollAnimation();
     void DrawScrollAnimation(wxDC& dc);
     std::pair<unsigned int, unsigned int> CellAt(const wxPoint& point) const;

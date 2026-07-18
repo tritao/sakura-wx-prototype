@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -41,7 +42,14 @@ public:
     virtual void Stop() = 0;
     virtual bool Write(const char* data, std::size_t length) = 0;
     virtual bool Resize(unsigned int columns, unsigned int rows) = 0;
-    virtual std::vector<std::string> TakeOutput() = 0;
+    // Return at most max_bytes of queued process output. Limiting one drain
+    // keeps UI event loops responsive when a child writes continuously (for
+    // example, `yes`). A partial chunk remains queued for the next drain.
+    virtual std::vector<std::string> TakeOutput(
+        std::size_t max_bytes = std::numeric_limits<std::size_t>::max()) = 0;
+    // Drop output already queued by an interrupted/flooding command. This is
+    // owner-thread-only and does not affect output received afterwards.
+    virtual void DiscardOutput() = 0;
 
     // Status and metrics are snapshots and may be read while the transport's
     // reader thread is active.

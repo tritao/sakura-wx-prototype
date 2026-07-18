@@ -25,6 +25,8 @@
 
 namespace {
 
+constexpr uint64_t kMaximumQueuedOutputBytes = 1024u * 1024u;
+
 void RecordMaximum(std::atomic<uint64_t>& maximum, uint64_t value)
 {
     uint64_t current = maximum.load();
@@ -55,6 +57,23 @@ void SignalProcessGroup(pid_t process, int signal)
         return;
     if (::kill(-process, signal) < 0 && errno == ESRCH)
         ::kill(process, signal);
+}
+
+void ResetChildSignalState()
+{
+    struct sigaction action {};
+    action.sa_handler = SIG_DFL;
+    sigemptyset(&action.sa_mask);
+    const int signals[] = {
+        SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGPIPE, SIGCHLD,
+        SIGTSTP, SIGTTIN, SIGTTOU, SIGWINCH,
+    };
+    for (const int signal : signals)
+        ::sigaction(signal, &action, nullptr);
+
+    sigset_t mask;
+    sigemptyset(&mask);
+    ::sigprocmask(SIG_SETMASK, &mask, nullptr);
 }
 
 enum class WaitResult {
@@ -124,6 +143,11 @@ bool PosixPtySession::Start(unsigned int columns, unsigned int rows,
     }
 
     if (child == 0) {
+        // A GUI process may inherit SIGINT/SIGQUIT as ignored from its
+        // launching shell. Restore normal terminal-child signal semantics so
+        // the PTY's VINTR byte (Ctrl-C) can signal the foreground process
+        // group, including commands such as `yes`.
+        ResetChildSignalState();
         ::setenv("TERM", "xterm-256color", 1);
         ::setenv("COLORTERM", "truecolor", 1);
 
@@ -278,18 +302,35 @@ bool PosixPtySession::Resize(unsigned int columns, unsigned int rows)
 #endif
 }
 
-std::vector<std::string> PosixPtySession::TakeOutput()
+std::vector<std::string> PosixPtySession::TakeOutput(std::size_t max_bytes)
 {
     std::deque<std::string> pending;
+    std::size_t taken = 0;
     {
         std::lock_guard lock(output_mutex_);
-        pending.swap(output_);
+        while (!output_.empty() && taken < max_bytes) {
+            std::string& chunk = output_.front();
+            const std::size_t available = max_bytes - taken;
+            if (chunk.size() <= available) {
+                taken += chunk.size();
+                pending.emplace_back(std::move(chunk));
+                output_.pop_front();
+            } else {
+                pending.emplace_back(chunk.data(), available);
+                chunk.erase(0, available);
+                taken += available;
+            }
+        }
     }
-    uint64_t bytes = 0;
-    for (const auto& chunk : pending)
-        bytes += chunk.size();
-    queued_bytes_.fetch_sub(bytes);
+    queued_bytes_.fetch_sub(static_cast<uint64_t>(taken));
     return std::vector<std::string>(pending.begin(), pending.end());
+}
+
+void PosixPtySession::DiscardOutput()
+{
+    std::lock_guard lock(output_mutex_);
+    output_.clear();
+    queued_bytes_.store(0);
 }
 
 TransportMetrics PosixPtySession::GetMetrics() const
@@ -319,6 +360,14 @@ void PosixPtySession::ReadLoop(int fd)
 #if defined(SAKURA_WX_POSIX)
     char buffer[8192];
     while (!stop_requested_.load()) {
+        const uint64_t queued = queued_bytes_.load();
+        if (queued >= kMaximumQueuedOutputBytes) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        const std::size_t read_capacity = std::min<std::size_t>(
+            sizeof(buffer), static_cast<std::size_t>(
+                kMaximumQueuedOutputBytes - queued));
         struct pollfd descriptor {fd, POLLIN, 0};
         const int result = ::poll(&descriptor, 1, 100);
         if (result < 0) {
@@ -331,7 +380,7 @@ void PosixPtySession::ReadLoop(int fd)
         if ((descriptor.revents & (POLLIN | POLLHUP | POLLERR)) == 0)
             continue;
 
-        const ssize_t received = ::read(fd, buffer, sizeof(buffer));
+        const ssize_t received = ::read(fd, buffer, read_capacity);
         if (received > 0) {
             std::lock_guard lock(output_mutex_);
             output_.emplace_back(buffer, static_cast<std::size_t>(received));

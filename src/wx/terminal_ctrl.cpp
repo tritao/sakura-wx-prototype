@@ -12,6 +12,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -170,6 +171,8 @@ public:
           output_timer_(&owner_),
           transport_(std::move(transport))
     {
+        trace_scroll_ = std::getenv("SAKURA_TRACE_SCROLL") != nullptr;
+        trace_keys_ = std::getenv("SAKURA_TRACE_KEYS") != nullptr;
         core_ = sakura_terminal_new(&Impl::WriteBridge, this);
         const auto& background = config_.background;
         background_brush_ = wxBrush(wxColour(background[0], background[1],
@@ -193,6 +196,37 @@ public:
     void AssertOwnerThread() const
     {
         assert(std::this_thread::get_id() == owner_thread_);
+    }
+
+    void TraceScroll(const char* format, ...) const
+    {
+        if (!trace_scroll_)
+            return;
+        const auto elapsed = std::chrono::duration_cast<
+            std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                       trace_started_).count();
+        std::fprintf(stderr, "[scroll +%lluus] ",
+                     static_cast<unsigned long long>(std::max<int64_t>(
+                         0, elapsed)));
+        va_list arguments;
+        va_start(arguments, format);
+        std::vfprintf(stderr, format, arguments);
+        va_end(arguments);
+        std::fputc('\n', stderr);
+    }
+
+    void TraceKey(const wxKeyEvent& event, uint32_t keysym,
+                  uint32_t ascii, uint32_t unicode) const
+    {
+        if (!trace_keys_)
+            return;
+        std::fprintf(stderr,
+                     "[key] code=%d unicode=%u control=%d shift=%d alt=%d meta=%d keysym=%u ascii=%u forwarded-unicode=%u\n",
+                     event.GetKeyCode(), event.GetUnicodeKey(),
+                     event.ControlDown() ? 1 : 0, event.ShiftDown() ? 1 : 0,
+                     event.AltDown() ? 1 : 0, event.MetaDown() ? 1 : 0,
+                     keysym, ascii == SAKURA_TERMINAL_INVALID ? 0 : ascii,
+                     unicode);
     }
 
     static constexpr std::size_t kPaintSampleWindow = 256;
@@ -357,8 +391,12 @@ public:
     TransportState last_transport_state_ = TransportState::Stopped;
     std::chrono::steady_clock::time_point last_metrics_log_;
     std::chrono::steady_clock::time_point last_metrics_callback_;
+    std::chrono::steady_clock::time_point trace_started_ =
+        std::chrono::steady_clock::now();
     std::string last_title_;
     std::string last_error_;
+    bool trace_scroll_ = false;
+    bool trace_keys_ = false;
 };
 
 WxTerminalCtrl::WxTerminalCtrl(
@@ -420,6 +458,7 @@ WxTerminalCtrl::WxTerminalCtrl(
         NotifyTitleChanged();
         NotifyTransportStatus(initial_status);
         impl_->trace_metrics_ = std::getenv("SAKURA_TRACE_METRICS") != nullptr;
+        impl_->trace_scroll_ = impl_->trace_scroll_ || impl_->trace_metrics_;
     }
     impl_->output_timer_.Start(static_cast<int>(std::max(1u,
         impl_->config_.timer_interval_ms)));
@@ -488,6 +527,8 @@ void WxTerminalCtrl::RequestFrameRefresh()
         return;
     }
     if (!info.changed) {
+        impl_->TraceScroll("paint unchanged animation_active=%d",
+                           impl_->scroll_animation_active_ ? 1 : 0);
         sakura_terminal_frame_free(frame);
         return;
     }
@@ -1014,23 +1055,39 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
         record_paint();
         return;
     }
+    if (!info.changed) {
+        sakura_terminal_frame_free(frame);
+        if (impl_->scroll_animation_active_)
+            DrawScrollAnimation(dc);
+        else if (impl_->framebuffer_valid_)
+            dc.DrawBitmap(impl_->framebuffer_, 0, 0, false);
+        record_paint();
+        return;
+    }
     const wxSize client_size = GetClientSize();
     const int bitmap_width = std::max(1, client_size.GetWidth());
     const int bitmap_height = std::max(1, client_size.GetHeight());
     if (!impl_->framebuffer_.IsOk() ||
         impl_->framebuffer_.GetWidth() != bitmap_width ||
         impl_->framebuffer_.GetHeight() != bitmap_height) {
-        CancelScrollAnimation(true);
+        CancelScrollAnimation(true, "paint-resize");
         impl_->framebuffer_ = wxBitmap(bitmap_width, bitmap_height, -1);
         impl_->framebuffer_valid_ = false;
         ++impl_->paint_metrics_.framebuffer_rebuilds;
     }
 
+    impl_->TraceScroll(
+        "frame changed=%d generation=%llu delta=%d kind=%d full=%d framebuffer=%d "
+        "dirty=%u,%u-%u,%u",
+        info.changed, static_cast<unsigned long long>(info.generation),
+        info.scroll_delta, static_cast<int>(info.scroll_kind),
+        full_repaint ? 1 : 0, impl_->framebuffer_valid_ ? 1 : 0,
+        info.dirty.left, info.dirty.top, info.dirty.right, info.dirty.bottom);
     if (info.scroll_kind == SAKURA_TERMINAL_SCROLL_VIEWPORT &&
-        info.scroll_delta != 0 && !full_repaint)
+        info.scroll_delta != 0)
         BeginScrollAnimation(info);
     else
-        CancelScrollAnimation(true);
+        CancelScrollAnimation(true, "paint-other-frame");
 
     wxMemoryDC framebuffer_dc;
     framebuffer_dc.SelectObject(impl_->framebuffer_);
@@ -1064,7 +1121,7 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
 
 void WxTerminalCtrl::OnSize(wxSizeEvent& event)
 {
-    CancelScrollAnimation(true);
+    CancelScrollAnimation(true, "size");
     UpdateGeometry();
     ++impl_->paint_metrics_.refresh_requests;
     ++impl_->paint_metrics_.full_refresh_requests;
@@ -1074,16 +1131,24 @@ void WxTerminalCtrl::OnSize(wxSizeEvent& event)
 
 void WxTerminalCtrl::OnChar(wxKeyEvent& event)
 {
-    CancelScrollAnimation(true);
+    CancelScrollAnimation(true, "key");
     const uint32_t key = static_cast<uint32_t>(event.GetKeyCode());
     const uint32_t unicode = event.GetUnicodeKey();
     const bool copy_key = key == 'c' || key == 'C' || unicode == 'c' ||
-                          unicode == 'C' || key == 3;
+                          unicode == 'C' || key == WXK_CONTROL_C ||
+                          unicode == WXK_CONTROL_C;
     const bool paste_key = key == 'v' || key == 'V' || unicode == 'v' ||
-                           unicode == 'V' || key == 22;
+                           unicode == 'V' || key == WXK_CONTROL_V ||
+                           unicode == WXK_CONTROL_V;
     const bool restart_key = key == 'r' || key == 'R' || unicode == 'r' ||
-                             unicode == 'R' || key == 18;
-    if ((event.ControlDown() || event.MetaDown()) && event.ShiftDown()) {
+                             unicode == 'R' || key == WXK_CONTROL_R ||
+                             unicode == WXK_CONTROL_R;
+    const bool shortcut_modifier = event.CmdDown() || event.MetaDown();
+    const bool physical_control = event.RawControlDown();
+    const bool interrupt_key = physical_control &&
+        (key == 'c' || key == 'C' || unicode == 'c' || unicode == 'C' ||
+         key == WXK_CONTROL_C || unicode == WXK_CONTROL_C);
+    if (shortcut_modifier && event.ShiftDown()) {
         if (restart_key) {
             RestartTransport();
             return;
@@ -1100,13 +1165,36 @@ void WxTerminalCtrl::OnChar(wxKeyEvent& event)
 
     unsigned int modifiers = 0;
     if (event.ShiftDown()) modifiers |= SAKURA_TERMINAL_SHIFT;
-    if (event.ControlDown()) modifiers |= SAKURA_TERMINAL_CONTROL;
+    if (physical_control) modifiers |= SAKURA_TERMINAL_CONTROL;
     if (event.AltDown()) modifiers |= SAKURA_TERMINAL_ALT;
-    if (event.MetaDown()) modifiers |= SAKURA_TERMINAL_LOGO;
+    // wx uses ControlDown() for the primary Command modifier on macOS. Do
+    // not turn that into a terminal Ctrl byte; preserve it as the logo
+    // modifier while RawControlDown() represents physical Ctrl.
+    if (event.MetaDown() || (shortcut_modifier && !physical_control))
+        modifiers |= SAKURA_TERMINAL_LOGO;
 
-    const uint32_t ascii = unicode <= 0x7f ? unicode : SAKURA_TERMINAL_INVALID;
-    if (sakura_terminal_handle_key(impl_->core_, KeySymFor(event), ascii,
+    uint32_t ascii = unicode <= 0x7f ? unicode : SAKURA_TERMINAL_INVALID;
+    uint32_t keysym = KeySymFor(event);
+    // wx backends report Ctrl-A..Ctrl-Z as control-code values (for example
+    // Ctrl-C is U+0003). Normalize those values back to their letter keysyms
+    // so libtsm takes its explicit control-key path on every platform
+    // instead of relying on its Unicode fallback.
+    const uint32_t control_code = unicode >= WXK_CONTROL_A &&
+                                  unicode <= WXK_CONTROL_Z
+        ? unicode
+        : key;
+    if (physical_control && control_code >= WXK_CONTROL_A &&
+        control_code <= WXK_CONTROL_Z) {
+        const uint32_t control_letter =
+            static_cast<uint32_t>('a' + control_code - WXK_CONTROL_A);
+        ascii = control_letter;
+        keysym = control_letter;
+    }
+    impl_->TraceKey(event, keysym, ascii, unicode);
+    if (sakura_terminal_handle_key(impl_->core_, keysym, ascii,
                                    modifiers, unicode)) {
+        if (interrupt_key && impl_->transport_ != nullptr)
+            impl_->transport_->DiscardOutput();
         RequestFrameRefresh();
         return;
     }
@@ -1117,7 +1205,9 @@ void WxTerminalCtrl::OnMouseWheel(wxMouseEvent& event)
 {
     if (!event.ShiftDown() &&
         sakura_terminal_mouse_reporting_enabled(impl_->core_)) {
-        CancelScrollAnimation(true);
+        impl_->TraceScroll("wheel route=application rotation=%d",
+                           event.GetWheelRotation());
+        CancelScrollAnimation(true, "mouse-reporting");
         const unsigned int button = event.GetWheelRotation() > 0
             ? SAKURA_TERMINAL_MOUSE_WHEEL_UP
             : SAKURA_TERMINAL_MOUSE_WHEEL_DOWN;
@@ -1147,6 +1237,12 @@ void WxTerminalCtrl::QueueWheelScroll(const wxMouseEvent& event)
     ++impl_->paint_metrics_.wheel_events;
 
     const int actions = impl_->wheel_rotation_ / kWheelDelta;
+    impl_->TraceScroll(
+        "wheel route=scrollback rotation=%d delta=%d lines=%d page=%d "
+        "normalized=%d accumulator=%d actions=%d",
+        rotation, event_delta, event.GetLinesPerAction(),
+        event.IsPageScroll() ? 1 : 0, normalized_rotation,
+        impl_->wheel_rotation_, actions);
     if (actions == 0) {
         ++impl_->paint_metrics_.wheel_partial_events;
         return;
@@ -1181,6 +1277,8 @@ bool WxTerminalCtrl::FlushWheelScroll()
         ? magnitude : -magnitude;
     impl_->pending_wheel_lines_ -= lines;
     sakura_terminal_scroll_lines(impl_->core_, lines);
+    impl_->TraceScroll("queue lines=%d pending=%d", lines,
+                       impl_->pending_wheel_lines_);
     ++impl_->paint_metrics_.wheel_scroll_updates;
     impl_->paint_metrics_.wheel_lines_scrolled +=
         static_cast<uint64_t>(magnitude);
@@ -1192,12 +1290,18 @@ void WxTerminalCtrl::BeginScrollAnimation(
 {
     impl_->AssertOwnerThread();
     if (!impl_->config_.smooth_scrolling || !impl_->framebuffer_valid_ ||
-        info.full_repaint || info.scroll_delta == 0 ||
-        info.scroll_kind != SAKURA_TERMINAL_SCROLL_VIEWPORT)
+        info.scroll_delta == 0 ||
+        info.scroll_kind != SAKURA_TERMINAL_SCROLL_VIEWPORT) {
+        impl_->TraceScroll(
+            "animation reject enabled=%d framebuffer=%d delta=%d kind=%d",
+            impl_->config_.smooth_scrolling ? 1 : 0,
+            impl_->framebuffer_valid_ ? 1 : 0, info.scroll_delta,
+            static_cast<int>(info.scroll_kind));
         return;
+    }
 
     if (impl_->scroll_animation_active_)
-        CancelScrollAnimation(true);
+        CancelScrollAnimation(true, "animation-restart");
     impl_->scroll_animation_source_ = CloneBitmap(impl_->framebuffer_);
     if (!impl_->scroll_animation_source_.IsOk())
         return;
@@ -1220,13 +1324,20 @@ void WxTerminalCtrl::BeginScrollAnimation(
     impl_->scroll_animation_started_ = std::chrono::steady_clock::now();
     impl_->scroll_animation_active_ = true;
     ++impl_->paint_metrics_.scroll_animation_starts;
+    impl_->TraceScroll(
+        "animation start delta=%d full=%d distance_px=%d duration_ms=%lld",
+        info.scroll_delta, info.full_repaint ? 1 : 0,
+        impl_->scroll_animation_distance_px_,
+        static_cast<long long>(impl_->scroll_animation_duration_.count()));
 }
 
-void WxTerminalCtrl::CancelScrollAnimation(bool forced)
+void WxTerminalCtrl::CancelScrollAnimation(bool forced, const char* reason)
 {
     impl_->AssertOwnerThread();
     if (!impl_->scroll_animation_active_)
         return;
+    impl_->TraceScroll("animation cancel forced=%d reason=%s", forced ? 1 : 0,
+                       reason == nullptr ? "unknown" : reason);
     impl_->scroll_animation_active_ = false;
     impl_->scroll_animation_source_ = wxNullBitmap;
     impl_->scroll_animation_progress_px_ =
@@ -1249,7 +1360,11 @@ bool WxTerminalCtrl::AdvanceScrollAnimation()
     const double normalized = std::min<double>(1.0,
         std::chrono::duration<double, std::milli>(elapsed).count() /
             duration);
-    const double eased = 1.0 - std::pow(1.0 - normalized, 3.0);
+    // Wheel scrolling should advance at a constant pixel rate. An aggressive
+    // ease-out makes the first timer tick jump a large fraction of a cell,
+    // which feels like another line-based scroll even though later frames are
+    // animated.
+    const double eased = normalized;
     const int next_progress = static_cast<int>(std::lround(
         eased * impl_->scroll_animation_distance_px_));
     const bool changed = next_progress !=
@@ -1258,6 +1373,12 @@ bool WxTerminalCtrl::AdvanceScrollAnimation()
         impl_->scroll_animation_progress_px_ = next_progress;
         ++impl_->paint_metrics_.scroll_animation_frames;
     }
+    impl_->TraceScroll(
+        "animation advance elapsed_us=%lld progress_px=%d/%d changed=%d active=%d",
+        static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()),
+        next_progress, impl_->scroll_animation_distance_px_, changed ? 1 : 0,
+        normalized < 1.0 ? 1 : 0);
     if (normalized >= 1.0) {
         impl_->scroll_animation_active_ = false;
         impl_->scroll_animation_source_ = wxNullBitmap;
@@ -1278,6 +1399,10 @@ void WxTerminalCtrl::DrawScrollAnimation(wxDC& dc)
     }
 
     ++impl_->paint_metrics_.scroll_animation_paints;
+    impl_->TraceScroll("animation paint progress_px=%d/%d direction=%d",
+                       impl_->scroll_animation_progress_px_,
+                       impl_->scroll_animation_distance_px_,
+                       impl_->scroll_animation_direction_);
     const int width = impl_->framebuffer_.GetWidth();
     const int height = impl_->framebuffer_.GetHeight();
     const int progress = std::clamp(
@@ -1363,7 +1488,7 @@ void WxTerminalCtrl::EndMouseReporting(const wxMouseEvent& event)
 
 void WxTerminalCtrl::OnLeftDown(wxMouseEvent& event)
 {
-    CancelScrollAnimation(true);
+    CancelScrollAnimation(true, "mouse-down");
     SetFocus();
     const auto [column, row] = CellAt(event.GetPosition());
     if (ForwardMouse(event, SAKURA_TERMINAL_MOUSE_LEFT,
@@ -1444,7 +1569,7 @@ void WxTerminalCtrl::OnMouseButtonUp(wxMouseEvent& event)
 
 void WxTerminalCtrl::UpdateSelectionAt(const wxPoint& position)
 {
-    CancelScrollAnimation(true);
+    CancelScrollAnimation(true, "selection");
     impl_->auto_scroll_direction_ = 0;
     if (position.y < 0)
         impl_->auto_scroll_direction_ = -1;
@@ -1641,7 +1766,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
     else if (animation_changed)
         Refresh(false);
     if (impl_->selection_dragging_ && impl_->auto_scroll_direction_ != 0) {
-        CancelScrollAnimation(true);
+        CancelScrollAnimation(true, "selection-autoscroll");
         sakura_terminal_scroll_lines(impl_->core_,
                                      impl_->auto_scroll_direction_ < 0 ? 1 : -1);
         const auto [column, row] = CellAt(impl_->last_pointer_position_);
@@ -1649,11 +1774,13 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
         RequestFrameRefresh();
     }
     const auto output = impl_->transport_ != nullptr
-        ? impl_->transport_->TakeOutput() : std::vector<std::string> {};
+        ? impl_->transport_->TakeOutput(std::max<std::size_t>(
+              1, impl_->config_.output_bytes_per_tick))
+        : std::vector<std::string> {};
     for (const auto& chunk : output)
         sakura_terminal_feed_output(impl_->core_, chunk.data(), chunk.size());
     if (!output.empty()) {
-        CancelScrollAnimation(true);
+        CancelScrollAnimation(true, "output");
         RequestFrameRefresh();
     }
     NotifyTitleChanged();
@@ -1685,6 +1812,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          "paint=%llu full/%llu partial cells=%llu "
                          "paint-us=%llu/%llu/%llu max=%llu refresh=%llu/%llu dirty "
                          "wheel=%llu partial=%llu updates=%llu lines=%llu "
+                         "animation=%llu/%llu/%llu/%llu settles=%llu "
                          "glyph-cache=%llu/%llu bypass=%llu evictions=%llu "
                          "bytes=%llu/%llu "
                          "transport-read=%lluB/%llu "
@@ -1715,6 +1843,11 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          static_cast<unsigned long long>(impl_->paint_metrics_.wheel_partial_events),
                          static_cast<unsigned long long>(impl_->paint_metrics_.wheel_scroll_updates),
                          static_cast<unsigned long long>(impl_->paint_metrics_.wheel_lines_scrolled),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.scroll_animation_starts),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.scroll_animation_frames),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.scroll_animation_paints),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.scroll_animation_completions),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.scroll_animation_settles),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_hits),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_misses),
                          static_cast<unsigned long long>(impl_->paint_metrics_.glyph_run_cache_bypasses),

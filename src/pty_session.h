@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -24,7 +25,9 @@ public:
     bool Write(const char* data, std::size_t length) override;
     bool Resize(unsigned int columns, unsigned int rows) override;
 
-    std::vector<std::string> TakeOutput() override;
+    std::vector<std::string> TakeOutput(
+        std::size_t max_bytes = std::numeric_limits<std::size_t>::max()) override;
+    void DiscardOutput() override;
     bool IsRunning() const override { return running_.load(); }
     TransportStatus GetStatus() const override;
     TransportMetrics GetMetrics() const override;

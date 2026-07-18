@@ -50,6 +50,16 @@ Implementations may have an internal reader thread:
 child process -> reader thread -> synchronized output queue -> UI TakeOutput()
 ```
 
+`TakeOutput(max_bytes)` is bounded. If the queue contains more data than the
+limit, the remainder stays queued, including any unconsumed suffix of a
+chunk. UI frontends should use a finite limit per event-loop turn so a noisy
+child cannot starve keyboard, paint, or shutdown events. Built-in PTY
+transports also apply a 1 MiB queue high-water mark and pause their reader
+threads until the owner drains output, preventing a continuous writer from
+growing memory without bound. After sending a terminal interrupt, a frontend
+may call `DiscardOutput()` to remove stale flood output; bytes received after
+that call, such as the shell's prompt, remain queued.
+
 `GetStatus`, `GetMetrics`, and `IsRunning` are snapshot reads and may be used
 while the reader thread is active. A returned output vector owns its strings;
 the caller may retain them after `TakeOutput()` returns.
@@ -63,7 +73,9 @@ the owner-thread boundary.
 
 The POSIX transport treats PTY `EIO`/EOF as the end of the reader stream,
 waits for the child to report its exit status, and uses the PTY process group
-for shutdown escalation. On Windows, the ConPTY reader's blocking operation
+uses default signal dispositions in the child so PTY-generated Ctrl-C can
+deliver `SIGINT` to the foreground process group, and uses the PTY process
+group for shutdown escalation. On Windows, the ConPTY reader's blocking operation
 is cancelled before the reader is joined, and the process is placed in a
 kill-on-close Job Object when the platform permits it.
 
@@ -82,6 +94,14 @@ The wx control and all of its callbacks are UI-thread-affine:
 - hosts that need to update other threads or perform destructive actions should
   post work back to their own event loop;
 - callback state is owned by the control and is not invoked after destruction.
+
+Keyboard modifier translation follows wx's platform abstraction rather than
+testing toolkit-specific event fields. `RawControlDown()` represents physical
+Ctrl and is translated to terminal control bytes. `CmdDown()`/`MetaDown()` are
+used for primary application shortcuts and logo modifiers; this preserves the
+distinction on macOS where `ControlDown()` represents Command. wx control-code
+events such as Ctrl-C are normalized to their named `WXK_CONTROL_*` letter
+keysyms before entering libtsm.
 
 Destruction stops the timer first, requests transport shutdown, joins the
 transport reader thread through `Stop()`, and then destroys the core and
