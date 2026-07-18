@@ -30,6 +30,9 @@ struct WxPaintMetrics {
     uint64_t painted_cells = 0;
     uint64_t paint_time_us = 0;
     uint64_t max_paint_time_us = 0;
+    uint64_t p50_paint_time_us = 0;
+    uint64_t p95_paint_time_us = 0;
+    uint64_t p99_paint_time_us = 0;
     uint64_t refresh_requests = 0;
     uint64_t full_refresh_requests = 0;
     uint64_t dirty_refresh_requests = 0;

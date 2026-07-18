@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -22,6 +24,9 @@ struct MetricDelta {
     std::uint64_t painted_cells = 0;
     std::uint64_t paint_time_us = 0;
     std::uint64_t max_paint_time_us = 0;
+    std::uint64_t p50_paint_time_us = 0;
+    std::uint64_t p95_paint_time_us = 0;
+    std::uint64_t p99_paint_time_us = 0;
     std::uint64_t refresh_requests = 0;
     std::uint64_t full_refresh_requests = 0;
     std::uint64_t dirty_refresh_requests = 0;
@@ -48,6 +53,9 @@ MetricDelta Difference(const WxPaintMetrics& before,
         after.painted_cells - before.painted_cells,
         after.paint_time_us - before.paint_time_us,
         after.max_paint_time_us,
+        after.p50_paint_time_us,
+        after.p95_paint_time_us,
+        after.p99_paint_time_us,
         after.refresh_requests - before.refresh_requests,
         after.full_refresh_requests - before.full_refresh_requests,
         after.dirty_refresh_requests - before.dirty_refresh_requests,
@@ -121,6 +129,12 @@ struct ScenarioResult {
     MetricDelta metrics;
 };
 
+struct BenchmarkOptions {
+    bool json = false;
+    std::size_t cache_max_bytes = 8u * 1024u * 1024u;
+    std::size_t cache_max_entries = 1024;
+};
+
 class BenchmarkApp final : public wxApp {
 public:
     bool OnInit() override
@@ -130,6 +144,12 @@ public:
 
     int OnRun() override
     {
+        BenchmarkOptions options;
+        std::string option_error;
+        if (!ParseOptions(&options, &option_error)) {
+            std::cerr << option_error << '\n';
+            return 2;
+        }
         const ScenarioKind scenarios[] = {
             ScenarioKind::FullAscii,
             ScenarioKind::PartialAscii,
@@ -147,12 +167,12 @@ public:
         results.reserve(sizeof(scenarios) / sizeof(scenarios[0]));
         bool all_valid = true;
         for (ScenarioKind scenario : scenarios) {
-            ScenarioResult result = RunScenario(scenario);
+            ScenarioResult result = RunScenario(scenario, options);
             all_valid = Validate(result) && all_valid;
             results.push_back(std::move(result));
         }
 
-        if (JsonRequested())
+        if (options.json)
             PrintJson(results, all_valid);
         else
             PrintTsv(results);
@@ -160,13 +180,42 @@ public:
     }
 
 private:
-    bool JsonRequested() const
+    bool ParseOptions(BenchmarkOptions* options, std::string* error) const
     {
         for (int index = 1; index < argc; ++index) {
-            if (wxString(argv[index]) == "--json")
-                return true;
+            const wxString argument(argv[index]);
+            if (argument == "--json") {
+                options->json = true;
+                continue;
+            }
+            const wxString bytes_prefix = "--cache-bytes=";
+            if (argument.StartsWith(bytes_prefix)) {
+                unsigned long long value = 0;
+                const wxString text = argument.Mid(bytes_prefix.length());
+                if (text.empty() || !text.ToULongLong(&value) ||
+                    value > std::numeric_limits<std::size_t>::max()) {
+                    *error = "invalid --cache-bytes value";
+                    return false;
+                }
+                options->cache_max_bytes = static_cast<std::size_t>(value);
+                continue;
+            }
+            const wxString entries_prefix = "--cache-entries=";
+            if (argument.StartsWith(entries_prefix)) {
+                unsigned long long value = 0;
+                const wxString text = argument.Mid(entries_prefix.length());
+                if (text.empty() || !text.ToULongLong(&value) ||
+                    value > std::numeric_limits<std::size_t>::max()) {
+                    *error = "invalid --cache-entries value";
+                    return false;
+                }
+                options->cache_max_entries = static_cast<std::size_t>(value);
+                continue;
+            }
+            *error = "unknown benchmark option: " + argument.ToStdString();
+            return false;
         }
-        return false;
+        return true;
     }
 
     static bool Validate(const ScenarioResult& result)
@@ -186,6 +235,9 @@ private:
             fail("cache entries exceeded configured limit");
         if (metrics.glyph_run_cache_peak_bytes < metrics.glyph_run_cache_bytes)
             fail("cache peak bytes fell below current occupancy");
+        if (metrics.p50_paint_time_us > metrics.p95_paint_time_us ||
+            metrics.p95_paint_time_us > metrics.p99_paint_time_us)
+            fail("paint latency percentiles are not monotonic");
 
         if (!result.glyph_cache_enabled &&
             (metrics.glyph_run_cache_entries != 0 ||
@@ -217,7 +269,8 @@ private:
         std::cout << "scenario\titerations\telapsed_ms\t"
                      "glyph_cache_max_bytes\tglyph_cache_max_entries\t"
                      "paint_events\tfull_repaints\tpartial_repaints\t"
-                     "painted_cells\tpaint_time_us\tmax_paint_us\t"
+                     "painted_cells\tpaint_time_us\tp50_paint_us\t"
+                     "p95_paint_us\tp99_paint_us\tmax_paint_us\t"
                      "full_refreshes\tdirty_refreshes\t"
                      "glyph_cache_hits\tglyph_cache_misses\t"
                      "glyph_cache_evictions\tglyph_cache_entries\t"
@@ -237,6 +290,9 @@ private:
                       << metrics.partial_repaints << '\t'
                       << metrics.painted_cells << '\t'
                       << metrics.paint_time_us << '\t'
+                      << metrics.p50_paint_time_us << '\t'
+                      << metrics.p95_paint_time_us << '\t'
+                      << metrics.p99_paint_time_us << '\t'
                       << metrics.max_paint_time_us << '\t'
                       << metrics.full_refresh_requests << '\t'
                       << metrics.dirty_refresh_requests << '\t'
@@ -281,6 +337,9 @@ private:
                       << "        \"partial_repaints\": " << metrics.partial_repaints << ",\n"
                       << "        \"painted_cells\": " << metrics.painted_cells << ",\n"
                       << "        \"paint_time_us\": " << metrics.paint_time_us << ",\n"
+                      << "        \"p50_paint_us\": " << metrics.p50_paint_time_us << ",\n"
+                      << "        \"p95_paint_us\": " << metrics.p95_paint_time_us << ",\n"
+                      << "        \"p99_paint_us\": " << metrics.p99_paint_time_us << ",\n"
                       << "        \"max_paint_us\": " << metrics.max_paint_time_us << ",\n"
                       << "        \"full_refreshes\": " << metrics.full_refresh_requests << ",\n"
                       << "        \"dirty_refreshes\": " << metrics.dirty_refresh_requests << ",\n"
@@ -308,7 +367,8 @@ private:
         wxYield();
     }
 
-    ScenarioResult RunScenario(ScenarioKind kind)
+    ScenarioResult RunScenario(ScenarioKind kind,
+                               const BenchmarkOptions& options)
     {
         auto* frame = new wxFrame(nullptr, wxID_ANY, "Sakura wx paint benchmark",
                                   wxDefaultPosition, wxSize(1280, 720));
@@ -317,6 +377,8 @@ private:
         config.timer_interval_ms = 1000000;
         config.glyph_cache_enabled = kind !=
             ScenarioKind::PartialUnicodeUncached;
+        config.glyph_cache_max_bytes = options.cache_max_bytes;
+        config.glyph_cache_max_entries = options.cache_max_entries;
         if (kind == ScenarioKind::GlyphCacheChurn) {
             config.glyph_cache_max_bytes = 16 * 1024;
             config.glyph_cache_max_entries = 128;

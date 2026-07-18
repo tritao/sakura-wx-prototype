@@ -11,6 +11,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -148,6 +149,39 @@ public:
         assert(std::this_thread::get_id() == owner_thread_);
     }
 
+    static constexpr std::size_t kPaintSampleWindow = 256;
+
+    static uint64_t PaintPercentile(
+        const std::array<uint64_t, kPaintSampleWindow>& sorted,
+        std::size_t count, std::size_t numerator, std::size_t denominator)
+    {
+        const std::size_t rank = std::max<std::size_t>(
+            1, (count * numerator + denominator - 1) / denominator);
+        return sorted[rank - 1];
+    }
+
+    void RecordPaintDuration(uint64_t elapsed_us)
+    {
+        paint_metrics_.paint_time_us += elapsed_us;
+        paint_metrics_.max_paint_time_us = std::max(
+            paint_metrics_.max_paint_time_us, elapsed_us);
+        paint_time_samples_[paint_time_sample_cursor_] = elapsed_us;
+        paint_time_sample_cursor_ =
+            (paint_time_sample_cursor_ + 1) % kPaintSampleWindow;
+        paint_time_sample_count_ = std::min(
+            paint_time_sample_count_ + 1, kPaintSampleWindow);
+
+        auto sorted = paint_time_samples_;
+        std::sort(sorted.begin(), sorted.begin() +
+                  static_cast<std::ptrdiff_t>(paint_time_sample_count_));
+        paint_metrics_.p50_paint_time_us = PaintPercentile(
+            sorted, paint_time_sample_count_, 50, 100);
+        paint_metrics_.p95_paint_time_us = PaintPercentile(
+            sorted, paint_time_sample_count_, 95, 100);
+        paint_metrics_.p99_paint_time_us = PaintPercentile(
+            sorted, paint_time_sample_count_, 99, 100);
+    }
+
     using GlyphRunLru = std::list<GlyphRunKey>;
     using GlyphRunCache = std::unordered_map<
         GlyphRunKey, GlyphRunCacheEntry, GlyphRunKeyHash>;
@@ -240,6 +274,9 @@ public:
     SakuraTerminalDirtyRegion pending_dirty_ {};
     bool pending_full_repaint_ = false;
     WxPaintMetrics paint_metrics_;
+    std::array<uint64_t, kPaintSampleWindow> paint_time_samples_ {};
+    std::size_t paint_time_sample_count_ = 0;
+    std::size_t paint_time_sample_cursor_ = 0;
     wxTimer output_timer_;
     std::unique_ptr<TerminalTransport> transport_;
     SakuraTerminal* core_ = nullptr;
@@ -803,9 +840,7 @@ void WxTerminalCtrl::OnPaint(wxPaintEvent&)
             std::chrono::steady_clock::now() - paint_start).count();
         const uint64_t elapsed_us = static_cast<uint64_t>(
             std::max<int64_t>(0, elapsed));
-        impl_->paint_metrics_.paint_time_us += elapsed_us;
-        impl_->paint_metrics_.max_paint_time_us = std::max(
-            impl_->paint_metrics_.max_paint_time_us, elapsed_us);
+        impl_->RecordPaintDuration(elapsed_us);
     };
     wxAutoBufferedPaintDC dc(this);
     const auto& background = impl_->config_.background;
@@ -1331,7 +1366,7 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          "latency-max=%lluus/%llu paste=%lluB "
                          "mouse=%llu/%llu modes=%llu "
                          "paint=%llu full/%llu partial cells=%llu "
-                         "paint-max=%lluus refresh=%llu/%llu dirty "
+                         "paint-us=%llu/%llu/%llu max=%llu refresh=%llu/%llu dirty "
                          "glyph-cache=%llu/%llu evictions=%llu bytes=%llu/%llu "
                          "transport-read=%lluB/%llu "
                          "queue-high-water=%llu resize=%llu\n",
@@ -1351,6 +1386,9 @@ void WxTerminalCtrl::OnTimer(wxTimerEvent&)
                          static_cast<unsigned long long>(impl_->paint_metrics_.full_repaints),
                          static_cast<unsigned long long>(impl_->paint_metrics_.partial_repaints),
                          static_cast<unsigned long long>(impl_->paint_metrics_.painted_cells),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.p50_paint_time_us),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.p95_paint_time_us),
+                         static_cast<unsigned long long>(impl_->paint_metrics_.p99_paint_time_us),
                          static_cast<unsigned long long>(impl_->paint_metrics_.max_paint_time_us),
                          static_cast<unsigned long long>(impl_->paint_metrics_.refresh_requests),
                          static_cast<unsigned long long>(impl_->paint_metrics_.dirty_refresh_requests),

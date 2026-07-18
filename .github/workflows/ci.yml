@@ -91,3 +91,29 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: ctest --test-dir build-sanitize --build-config Debug --output-on-failure
+
+  linux-wx-profiling:
+    name: ubuntu-latest / wx paint profiling
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev xvfb
+
+      - name: Build and run RelWithDebInfo cache matrix
+        run: ./scripts/run_wx_paint_profile.sh
+
+      - name: Upload wx paint profile JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: wx-paint-profile-${{ github.sha }}
+          path: benchmark-results/*.json
+          if-no-files-found: error

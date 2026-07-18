@@ -159,9 +159,10 @@ cmake --build build --target sakura-terminal-core-benchmark -j
 ./build/sakura-terminal-core-benchmark
 ```
 
-The wx paint benchmark also reports full/partial paints, painted cells, maximum
-frame paint time, glyph-cache hits/misses, evictions, entry/byte occupancy,
-background rectangles, bitmap versus direct text draws, and DC state changes.
+The wx paint benchmark also reports full/partial paints, painted cells, p50/p95/
+p99 and maximum frame paint time, glyph-cache hits/misses, evictions,
+entry/byte occupancy, background rectangles, bitmap versus direct text draws,
+and DC state changes.
 Its matrix covers full and partial ASCII, cached versus uncached
 Unicode/wide/combining output, glyph-cache churn, burst output, large screens,
 resize, scrolling, cursor, and selection workloads:
@@ -176,6 +177,14 @@ When benchmarks are enabled, `wx_paint_regression` runs the JSON benchmark
 under CTest and checks cache byte/entry limits, LRU churn, and cached versus
 uncached draw-path behavior. It intentionally does not gate on wall-clock
 timings, which are display-server and build-mode dependent.
+
+For release-mode profiling across 2, 4, 8, and 16 MiB cache limits, use the
+profiling helper. It stores one JSON result per cache size in
+`benchmark-results/`:
+
+```sh
+./scripts/run_wx_paint_profile.sh
+```
 
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,
