@@ -93,12 +93,15 @@ RunStats EnumerateRuns(const SakuraTerminalFrame* frame,
     RunStats stats;
     for (unsigned int row = 0; row < info.rows; ++row) {
         const std::size_t run_count =
-            sakura_terminal_frame_row_run_count(frame, row);
+            sakura_terminal_frame_row_span_count(
+                frame, row, SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS);
         for (std::size_t index = 0; index < run_count; ++index) {
             SakuraTerminalRunView run {};
-            Check(sakura_terminal_frame_row_run(frame, row, index, &run),
-                  "row-run lookup failed");
-            Check(run.cell_count <= SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS,
+            Check(sakura_terminal_frame_row_span(
+                      frame, row, index,
+                      SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS, &run),
+                  "row-span lookup failed");
+            Check(run.cell_count <= SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS,
                   "row-run span exceeded the packed bound");
             ++stats.count;
             stats.cells += run.cell_count;

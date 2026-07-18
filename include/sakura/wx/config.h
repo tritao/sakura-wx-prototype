@@ -19,9 +19,14 @@ struct TerminalConfig {
     std::array<uint8_t, 3> error_foreground {240, 180, 90};
     unsigned int timer_interval_ms = 16;
     unsigned int metrics_interval_ms = 1000;
+    bool smooth_scrolling = true;
+    unsigned int scroll_animation_ms_per_line = 40;
+    unsigned int scroll_animation_max_ms = 120;
     bool start_transport = true;
     bool glyph_cache_enabled = true;
     bool glyph_cache_bypass_scroll = true;
+    unsigned int glyph_cache_max_run_cells =
+        SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS;
     std::size_t glyph_cache_max_bytes = 4u * 1024u * 1024u;
     std::size_t glyph_cache_max_entries = 1024;
 };
@@ -44,6 +49,11 @@ struct WxPaintMetrics {
     uint64_t wheel_partial_events = 0;
     uint64_t wheel_scroll_updates = 0;
     uint64_t wheel_lines_scrolled = 0;
+    uint64_t scroll_animation_starts = 0;
+    uint64_t scroll_animation_frames = 0;
+    uint64_t scroll_animation_paints = 0;
+    uint64_t scroll_animation_completions = 0;
+    uint64_t scroll_animation_settles = 0;
     uint64_t glyph_run_cache_hits = 0;
     uint64_t glyph_run_cache_misses = 0;
     uint64_t glyph_run_cache_bypasses = 0;

@@ -48,6 +48,7 @@ struct TestFrame {
     bool changed = false;
     bool full_repaint = false;
     int scroll_delta = 0;
+    SakuraTerminalScrollKind scroll_kind = SAKURA_TERMINAL_SCROLL_NONE;
     TestDirtyRegion dirty;
     std::vector<SakuraTerminalDirtySpan> dirty_spans;
     std::shared_ptr<const TestSnapshot> snapshot;
@@ -182,6 +183,7 @@ public:
         result.changed = info.changed != 0;
         result.full_repaint = info.full_repaint != 0;
         result.scroll_delta = info.scroll_delta;
+        result.scroll_kind = info.scroll_kind;
         result.dirty = {info.dirty.left, info.dirty.top, info.dirty.right,
                         info.dirty.bottom};
         const std::size_t span_count =

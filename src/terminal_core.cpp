@@ -56,14 +56,12 @@ struct PackedGrid {
     std::vector<std::shared_ptr<const PackedRow>> row_data;
 };
 
-constexpr unsigned int kPackedRunSpanMaxCells =
-    SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS;
-
 struct PackedFrame {
     uint64_t generation = 0;
     bool changed = false;
     bool full_repaint = false;
     int scroll_delta = 0;
+    SakuraTerminalScrollKind scroll_kind = SAKURA_TERMINAL_SCROLL_NONE;
     SakuraTerminalDirtyRegion dirty {};
     std::vector<SakuraTerminalDirtySpan> dirty_spans;
     unsigned int columns = 0;
@@ -400,20 +398,7 @@ private:
             row->cells[column].style_index = 0;
             row->cells[column].width = 1;
         }
-        for (unsigned int column = 0; column < columns; ++column) {
-            if (row->runs.empty() ||
-                row->runs.back().cell_count >= kPackedRunSpanMaxCells) {
-                row->runs.push_back({column, 1, 0,
-                                     row->cells[column].text_offset,
-                                     row->cells[column].text_length});
-            } else {
-                PackedRun& run = row->runs.back();
-                ++run.cell_count;
-                const uint32_t end = row->cells[column].text_offset +
-                    row->cells[column].text_length;
-                run.text_length = end - run.text_offset;
-            }
-        }
+        row->runs.push_back({0, columns, 0, 0, columns});
         return row;
     }
 
@@ -620,15 +605,8 @@ private:
 
             for (unsigned int column = 0; column < grid.columns; ++column) {
                 const PackedCell& cell = row->cells[column];
-                const bool starts_wide_glyph = cell.width > 1;
-                const bool would_end_with_wide_glyph =
-                    !row->runs.empty() && starts_wide_glyph &&
-                    row->runs.back().cell_count + 1 ==
-                        kPackedRunSpanMaxCells;
                 if (row->runs.empty() ||
-                    row->runs.back().style_index != cell.style_index ||
-                    row->runs.back().cell_count >= kPackedRunSpanMaxCells ||
-                    would_end_with_wide_glyph) {
+                    row->runs.back().style_index != cell.style_index) {
                     row->runs.push_back({column, 1, cell.style_index,
                                          cell.text_offset, cell.text_length});
                 } else {
@@ -791,6 +769,14 @@ private:
                                    TSM_SCREEN_ALTERNATE) != 0;
         frame->scroll_delta = content_scroll_delta != 0
             ? content_scroll_delta : viewport_scroll_delta;
+        if (content_scroll_delta != 0 && viewport_scroll_delta != 0)
+            frame->scroll_kind = SAKURA_TERMINAL_SCROLL_MIXED;
+        else if (content_scroll_delta != 0)
+            frame->scroll_kind = SAKURA_TERMINAL_SCROLL_CONTENT;
+        else if (viewport_scroll_delta != 0)
+            frame->scroll_kind = SAKURA_TERMINAL_SCROLL_VIEWPORT;
+        else
+            frame->scroll_kind = SAKURA_TERMINAL_SCROLL_NONE;
         frame->full_repaint = !packed_frame_valid_ ||
             (columns != packed_last_columns_ || rows != packed_last_rows_ ||
              frame->alternate_screen != packed_last_alternate_screen_);
@@ -1233,6 +1219,95 @@ static uint64_t PackedStyleId(const PackedStyle& style)
     return value;
 }
 
+static bool FillPackedRunView(const PackedGrid& grid,
+                              const PackedRow& row,
+                              unsigned int row_index,
+                              const PackedRun& source,
+                              SakuraTerminalRunView* run)
+{
+    if (run == nullptr || source.style_index >= grid.styles.size() ||
+        source.text_offset > row.text.size() ||
+        source.text_length > row.text.size() - source.text_offset)
+        return false;
+    const PackedStyle& style = grid.styles[source.style_index];
+    run->row = row_index;
+    run->left = source.left;
+    run->cell_count = source.cell_count;
+    run->style_id = PackedStyleId(style);
+    run->text = row.text.data() + source.text_offset;
+    run->text_length = source.text_length;
+    std::memcpy(run->foreground, style.foreground.data(), 3);
+    std::memcpy(run->background, style.background.data(), 3);
+    run->attributes = style.attributes;
+    return true;
+}
+
+static bool PackedRunSpanAt(const PackedRow& row, const PackedRun& source,
+                            unsigned int max_cells, std::size_t span_index,
+                            PackedRun* span)
+{
+    if (span == nullptr || max_cells == 0 || source.cell_count == 0 ||
+        source.left >= row.cells.size() ||
+        source.cell_count > row.cells.size() - source.left)
+        return false;
+
+    /* A two-cell glyph is the smallest indivisible span. */
+    max_cells = std::max(2u, max_cells);
+    unsigned int cell_offset = 0;
+    std::size_t current_index = 0;
+    while (cell_offset < source.cell_count) {
+        unsigned int cell_count = std::min(
+            max_cells, source.cell_count - cell_offset);
+        if (cell_count < source.cell_count - cell_offset && cell_count > 1) {
+            const unsigned int boundary = source.left + cell_offset +
+                cell_count - 1;
+            if (row.cells[boundary].width > 1)
+                --cell_count;
+        }
+        if (cell_count == 0)
+            return false;
+        if (current_index == span_index) {
+            const unsigned int first_column = source.left + cell_offset;
+            const unsigned int last_column = first_column + cell_count - 1;
+            const PackedCell& first_cell = row.cells[first_column];
+            const PackedCell& last_cell = row.cells[last_column];
+            if (first_cell.text_offset > row.text.size() ||
+                first_cell.text_length > row.text.size() -
+                    first_cell.text_offset ||
+                last_cell.text_offset > row.text.size() ||
+                last_cell.text_length > row.text.size() -
+                    last_cell.text_offset)
+                return false;
+            span->left = first_column;
+            span->cell_count = cell_count;
+            span->style_index = source.style_index;
+            span->text_offset = first_cell.text_offset;
+            const uint32_t text_end = last_cell.text_offset +
+                last_cell.text_length;
+            if (text_end < span->text_offset)
+                return false;
+            span->text_length = text_end - span->text_offset;
+            return true;
+        }
+        cell_offset += cell_count;
+        ++current_index;
+    }
+    return false;
+}
+
+static std::size_t PackedRunSpanCount(const PackedRow& row,
+                                      const PackedRun& source,
+                                      unsigned int max_cells)
+{
+    if (max_cells == 0)
+        return 0;
+    std::size_t count = 0;
+    PackedRun span {};
+    while (PackedRunSpanAt(row, source, max_cells, count, &span))
+        ++count;
+    return count;
+}
+
 extern "C" {
 
 SakuraTerminal* sakura_terminal_new(SakuraTerminalWriteCallback callback,
@@ -1476,6 +1551,7 @@ int sakura_terminal_frame_info(const SakuraTerminalFrame* frame,
     info->changed = source.changed;
     info->full_repaint = source.full_repaint;
     info->scroll_delta = source.scroll_delta;
+    info->scroll_kind = source.scroll_kind;
     info->columns = source.columns;
     info->rows = source.rows;
     info->cursor_x = source.cursor_x;
@@ -1570,21 +1646,64 @@ int sakura_terminal_frame_row_run(const SakuraTerminalFrame* frame,
         if (index >= source_row.runs.size())
             return 0;
         const PackedRun& source = source_row.runs[index];
-        if (source.style_index >= grid.styles.size() ||
-            source.text_offset > source_row.text.size() ||
-            source.text_length > source_row.text.size() - source.text_offset)
+        return FillPackedRunView(grid, source_row, row, source, run) ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
+}
+
+size_t sakura_terminal_frame_row_span_count(
+    const SakuraTerminalFrame* frame, unsigned int row,
+    unsigned int max_cells)
+{
+    try {
+        if (frame == nullptr || frame->packed_frame == nullptr ||
+            frame->packed_frame->grid == nullptr || max_cells == 0)
             return 0;
-        const PackedStyle& style = grid.styles[source.style_index];
-        run->row = row;
-        run->left = source.left;
-        run->cell_count = source.cell_count;
-        run->style_id = PackedStyleId(style);
-        run->text = source_row.text.data() + source.text_offset;
-        run->text_length = source.text_length;
-        std::memcpy(run->foreground, style.foreground.data(), 3);
-        std::memcpy(run->background, style.background.data(), 3);
-        run->attributes = style.attributes;
-        return 1;
+        const PackedFrame& packed = *frame->packed_frame;
+        const PackedGrid& grid = *packed.grid;
+        if (row >= packed.rows || row >= grid.row_data.size() ||
+            grid.row_data[row] == nullptr)
+            return 0;
+        const PackedRow& source_row = *grid.row_data[row];
+        std::size_t count = 0;
+        for (const PackedRun& source : source_row.runs)
+            count += PackedRunSpanCount(source_row, source, max_cells);
+        return count;
+    } catch (...) {
+        return 0;
+    }
+}
+
+int sakura_terminal_frame_row_span(const SakuraTerminalFrame* frame,
+                                   unsigned int row, size_t index,
+                                   unsigned int max_cells,
+                                   SakuraTerminalRunView* span)
+{
+    try {
+        if (frame == nullptr || span == nullptr ||
+            frame->packed_frame == nullptr ||
+            frame->packed_frame->grid == nullptr || max_cells == 0)
+            return 0;
+        const PackedFrame& packed = *frame->packed_frame;
+        const PackedGrid& grid = *packed.grid;
+        if (row >= packed.rows || row >= grid.row_data.size() ||
+            grid.row_data[row] == nullptr)
+            return 0;
+        const PackedRow& source_row = *grid.row_data[row];
+        for (const PackedRun& source : source_row.runs) {
+            const std::size_t count = PackedRunSpanCount(
+                source_row, source, max_cells);
+            if (index < count) {
+                PackedRun bounded;
+                return PackedRunSpanAt(source_row, source, max_cells, index,
+                                       &bounded) &&
+                        FillPackedRunView(grid, source_row, row, bounded, span)
+                    ? 1 : 0;
+            }
+            index -= count;
+        }
+        return 0;
     } catch (...) {
         return 0;
     }

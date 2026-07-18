@@ -130,6 +130,7 @@ struct ScenarioResult {
     bool glyph_cache_enabled = true;
     std::size_t glyph_cache_max_bytes = 0;
     std::size_t glyph_cache_max_entries = 0;
+    unsigned int glyph_cache_max_run_cells = 0;
     MetricDelta metrics;
 };
 
@@ -137,6 +138,7 @@ struct BenchmarkOptions {
     bool json = false;
     std::size_t cache_max_bytes = 4u * 1024u * 1024u;
     std::size_t cache_max_entries = 1024;
+    unsigned int run_max_cells = SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS;
 };
 
 class BenchmarkApp final : public wxApp {
@@ -216,6 +218,18 @@ private:
                 options->cache_max_entries = static_cast<std::size_t>(value);
                 continue;
             }
+            const wxString run_cells_prefix = "--run-cells=";
+            if (argument.StartsWith(run_cells_prefix)) {
+                unsigned long long value = 0;
+                const wxString text = argument.Mid(run_cells_prefix.length());
+                if (text.empty() || !text.ToULongLong(&value) || value == 0 ||
+                    value > std::numeric_limits<unsigned int>::max()) {
+                    *error = "invalid --run-cells value";
+                    return false;
+                }
+                options->run_max_cells = static_cast<unsigned int>(value);
+                continue;
+            }
             *error = "unknown benchmark option: " + argument.ToStdString();
             return false;
         }
@@ -276,6 +290,7 @@ private:
     {
         std::cout << "scenario\titerations\telapsed_ms\t"
                      "glyph_cache_max_bytes\tglyph_cache_max_entries\t"
+                     "glyph_cache_max_run_cells\t"
                      "paint_events\tfull_repaints\tpartial_repaints\t"
                      "painted_cells\tpaint_time_us\tp50_paint_us\t"
                      "p95_paint_us\tp99_paint_us\tmax_paint_us\t"
@@ -295,6 +310,7 @@ private:
                       << result.elapsed_ms << '\t'
                       << result.glyph_cache_max_bytes << '\t'
                       << result.glyph_cache_max_entries << '\t'
+                      << result.glyph_cache_max_run_cells << '\t'
                       << metrics.paint_events << '\t'
                       << metrics.full_repaints << '\t'
                       << metrics.partial_repaints << '\t'
@@ -343,6 +359,8 @@ private:
                       << result.glyph_cache_max_bytes << ",\n"
                       << "      \"glyph_cache_max_entries\": "
                       << result.glyph_cache_max_entries << ",\n"
+                      << "      \"glyph_cache_max_run_cells\": "
+                      << result.glyph_cache_max_run_cells << ",\n"
                       << "      \"metrics\": {\n"
                       << "        \"paint_events\": " << metrics.paint_events << ",\n"
                       << "        \"full_repaints\": " << metrics.full_repaints << ",\n"
@@ -391,6 +409,7 @@ private:
         config.timer_interval_ms = 1000000;
         config.glyph_cache_enabled = kind !=
             ScenarioKind::PartialUnicodeUncached;
+        config.glyph_cache_max_run_cells = options.run_max_cells;
         config.glyph_cache_max_bytes = options.cache_max_bytes;
         config.glyph_cache_max_entries = options.cache_max_entries;
         if (kind == ScenarioKind::GlyphCacheChurn) {
@@ -512,6 +531,7 @@ private:
         result.glyph_cache_enabled = config.glyph_cache_enabled;
         result.glyph_cache_max_bytes = config.glyph_cache_max_bytes;
         result.glyph_cache_max_entries = config.glyph_cache_max_entries;
+        result.glyph_cache_max_run_cells = config.glyph_cache_max_run_cells;
         result.metrics = metrics;
 
         frame->Destroy();

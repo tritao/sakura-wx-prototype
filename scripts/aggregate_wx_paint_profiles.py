@@ -36,7 +36,7 @@ def median(values: list[int]) -> int | float:
 
 
 def aggregate(files: list[Path]) -> dict:
-    groups: dict[int, dict[str, list[dict[str, int]]]] = {}
+    groups: dict[tuple[int, int], dict[str, list[dict[str, int]]]] = {}
     for path in files:
         document = json.loads(path.read_text(encoding="utf-8"))
         if document.get("invariants_passed") is not True:
@@ -48,7 +48,8 @@ def aggregate(files: list[Path]) -> dict:
         if full_ascii is None:
             raise ValueError(f"missing full-ascii scenario: {path}")
         cache_bytes = int(full_ascii["glyph_cache_max_bytes"])
-        group = groups.setdefault(cache_bytes, {})
+        run_cells = int(full_ascii["glyph_cache_max_run_cells"])
+        group = groups.setdefault((cache_bytes, run_cells), {})
         for name in SCENARIOS:
             item = scenarios.get(name)
             if item is None:
@@ -60,13 +61,14 @@ def aggregate(files: list[Path]) -> dict:
         "runs": len(files),
         "cache_sizes": [],
     }
-    for cache_bytes in sorted(groups):
+    for cache_bytes, run_cells in sorted(groups):
         cache_result = {
             "cache_bytes": cache_bytes,
-            "runs": len(next(iter(groups[cache_bytes].values()))),
+            "run_cells": run_cells,
+            "runs": len(next(iter(groups[(cache_bytes, run_cells)].values()))),
             "scenarios": {},
         }
-        for name, samples in groups[cache_bytes].items():
+        for name, samples in groups[(cache_bytes, run_cells)].items():
             cache_result["scenarios"][name] = {
                 metric: median([int(sample[metric]) for sample in samples])
                 for metric in METRICS

@@ -352,6 +352,8 @@ int main()
               "scrolling one line did not change the visible screen");
         Check(up_frame.scroll_delta != 0,
               "viewport scroll delta was not exposed");
+        Check(up_frame.scroll_kind == SAKURA_TERMINAL_SCROLL_VIEWPORT,
+              "viewport scroll kind was not exposed");
         scroll_core.ScrollLines(-1);
         const TestSnapshot restored_snapshot = scroll_core.TakeSnapshot();
         Check(restored_snapshot.cells[7].codepoint ==
@@ -368,7 +370,9 @@ int main()
         const TestFrame output_scroll_frame = output_scroll_core.TakeFrame();
         Check(output_scroll_frame.changed &&
                   !output_scroll_frame.full_repaint &&
-                  output_scroll_frame.scroll_delta == 1,
+                  output_scroll_frame.scroll_delta == 1 &&
+                  output_scroll_frame.scroll_kind ==
+                      SAKURA_TERMINAL_SCROLL_CONTENT,
               "full-screen output scroll was not exposed as a row delta");
         Check(output_scroll_frame.dirty.top <= 2 &&
                   output_scroll_frame.dirty.bottom == 3,

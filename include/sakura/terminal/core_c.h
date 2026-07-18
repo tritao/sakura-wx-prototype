@@ -8,10 +8,10 @@
 extern "C" {
 #endif
 
-#define SAKURA_TERMINAL_CORE_ABI_VERSION 2u
+#define SAKURA_TERMINAL_CORE_ABI_VERSION 4u
 #define SAKURA_TERMINAL_INVALID UINT32_MAX
-/* Packed row runs are bounded for efficient renderer-side glyph caching. */
-#define SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS 32u
+/* A renderer may request a different span bound through the frame API. */
+#define SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS 32u
 
 typedef struct SakuraTerminal SakuraTerminal;
 typedef struct SakuraTerminalFrame SakuraTerminalFrame;
@@ -66,6 +66,13 @@ typedef struct SakuraTerminalDirtySpan {
     unsigned int right;
 } SakuraTerminalDirtySpan;
 
+typedef enum SakuraTerminalScrollKind {
+    SAKURA_TERMINAL_SCROLL_NONE = 0,
+    SAKURA_TERMINAL_SCROLL_CONTENT = 1,
+    SAKURA_TERMINAL_SCROLL_VIEWPORT = 2,
+    SAKURA_TERMINAL_SCROLL_MIXED = 3,
+} SakuraTerminalScrollKind;
+
 typedef struct SakuraTerminalFrameInfo {
     uint64_t generation;
     int changed;
@@ -74,6 +81,8 @@ typedef struct SakuraTerminalFrameInfo {
      * top of the viewport; negative means rows moved toward the bottom. A
      * non-zero value is a hint for framebuffer scroll/blit optimization. */
     int scroll_delta;
+    /* Identifies whether scroll_delta came from output, the viewport, or both. */
+    SakuraTerminalScrollKind scroll_kind;
     unsigned int columns;
     unsigned int rows;
     unsigned int cursor_x;
@@ -106,11 +115,9 @@ typedef struct SakuraTerminalRunView {
     uint8_t attributes;
 } SakuraTerminalRunView;
 
-/* Run text is UTF-8 borrowed from the frame. Runs are homogeneous in style
- * and are bounded by SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS. `cell_count` counts
- * terminal grid cells, so it includes the two-cell advance of a wide glyph.
- * Run boundaries never leave a wide glyph's leading cell at the end of a run.
- */
+/* Run text is UTF-8 borrowed from the frame. Row runs are homogeneous in
+ * style; `cell_count` counts terminal grid cells, so it includes the two-cell
+ * advance of a wide glyph. Bounded spans are exposed separately below. */
 
 typedef struct SakuraTerminalMetrics {
     uint64_t output_bytes;
@@ -199,6 +206,16 @@ size_t sakura_terminal_frame_row_run_count(
 int sakura_terminal_frame_row_run(const SakuraTerminalFrame *frame,
                                   unsigned int row, size_t index,
                                   SakuraTerminalRunView *run);
+/* Return flattened, style-homogeneous spans for a row. `max_cells` must be
+ * non-zero; a wide glyph may make an individual span exceed a bound of one
+ * cell so its two-cell advance is never split. */
+size_t sakura_terminal_frame_row_span_count(
+    const SakuraTerminalFrame *frame, unsigned int row,
+    unsigned int max_cells);
+int sakura_terminal_frame_row_span(const SakuraTerminalFrame *frame,
+                                   unsigned int row, size_t index,
+                                   unsigned int max_cells,
+                                   SakuraTerminalRunView *span);
 
 void sakura_terminal_get_metrics(const SakuraTerminal *terminal,
                                  SakuraTerminalMetrics *metrics);

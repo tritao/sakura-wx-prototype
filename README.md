@@ -190,11 +190,15 @@ the raw JSON runs plus a median summary in `benchmark-results/`:
 # Override repetition count or output location when iterating locally.
 REPEATS=10 OUTPUT_DIR=/tmp/sakura-wx-profile \
   ./scripts/run_wx_paint_profile.sh
+# Compare a different renderer span bound.
+RUN_CELLS=16 REPEATS=10 OUTPUT_DIR=/tmp/sakura-wx-profile-16 \
+  ./scripts/run_wx_paint_profile.sh
 ```
 
-The current policy uses a 4 MiB default glyph cache: the terminal core emits
-style-homogeneous run spans capped at 32 cells, while the scroll renderer
-bypasses one-shot newly exposed rows to avoid polluting the cache.
+The current policy uses a 4 MiB default glyph cache: the wx renderer requests
+style-homogeneous core spans capped at 32 cells, while other renderers may
+choose a different bound. The scroll renderer bypasses one-shot newly exposed
+rows to avoid polluting the cache.
 
 The deterministic VT replay harness runs hex-encoded session fixtures through
 the C terminal ABI and checks semantic cells, cursor state, titles, selection,

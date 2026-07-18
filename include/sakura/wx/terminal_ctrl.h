@@ -24,6 +24,7 @@ public:
     // platform keeps the generic monospace family unresolved.
     std::string GetFontFamily() const;
     int GetFontSize() const;
+    wxSize GetCellSize() const;
     // Capture the latest core frame and schedule the smallest appropriate wx
     // invalidation. Hosts that mutate Core() directly should call this after
     // feeding output or changing terminal state.
@@ -50,6 +51,10 @@ private:
     void OnMouseWheel(wxMouseEvent& event);
     void QueueWheelScroll(const wxMouseEvent& event);
     bool FlushWheelScroll();
+    void BeginScrollAnimation(const SakuraTerminalFrameInfo& info);
+    void CancelScrollAnimation(bool forced);
+    bool AdvanceScrollAnimation();
+    void DrawScrollAnimation(wxDC& dc);
     std::pair<unsigned int, unsigned int> CellAt(const wxPoint& point) const;
     static unsigned char MouseModifiers(const wxMouseEvent& event);
     bool ForwardMouse(const wxMouseEvent& event, unsigned int button,

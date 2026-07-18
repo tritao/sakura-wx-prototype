@@ -40,7 +40,8 @@ int main(void)
         return 1;
     }
     if (!check(info.columns == 4 && info.rows == 1 && info.full_repaint &&
-                   info.scroll_delta == 0,
+                   info.scroll_delta == 0 &&
+                   info.scroll_kind == SAKURA_TERMINAL_SCROLL_NONE,
                "C API frame dimensions or repaint state were wrong")) {
         sakura_terminal_frame_free(frame);
         sakura_terminal_free(terminal);
@@ -135,14 +136,41 @@ int main(void)
         sakura_terminal_free(terminal);
         return 1;
     }
-    const size_t span_count =
+    const size_t logical_run_count =
         sakura_terminal_frame_row_run_count(span_frame, 0);
+    unsigned int logical_next_left = 0;
+    for (size_t index = 0; index < logical_run_count; ++index) {
+        SakuraTerminalRunView logical_run;
+        if (!check(sakura_terminal_frame_row_run(
+                       span_frame, 0, index, &logical_run) &&
+                       logical_run.left == logical_next_left &&
+                       logical_run.cell_count > 0,
+                   "C API logical run was not preserved")) {
+            sakura_terminal_frame_free(span_frame);
+            sakura_terminal_free(span_terminal);
+            sakura_terminal_free(terminal);
+            return 1;
+        }
+        logical_next_left += logical_run.cell_count;
+    }
+    if (!check(logical_run_count > 0 && logical_next_left == 100,
+               "C API logical runs did not cover the row")) {
+        sakura_terminal_frame_free(span_frame);
+        sakura_terminal_free(span_terminal);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    const size_t span_count = sakura_terminal_frame_row_span_count(
+        span_frame, 0, SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS);
     unsigned int next_left = 0;
     for (size_t index = 0; index < span_count; ++index) {
         SakuraTerminalRunView span;
-        if (!check(sakura_terminal_frame_row_run(span_frame, 0, index, &span) &&
+        if (!check(sakura_terminal_frame_row_span(
+                       span_frame, 0, index,
+                       SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS, &span) &&
                        span.left == next_left && span.cell_count > 0 &&
-                       span.cell_count <= SAKURA_TERMINAL_RUN_SPAN_MAX_CELLS,
+                       span.cell_count <=
+                           SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS,
                    "C API emitted an invalid bounded run span")) {
             sakura_terminal_frame_free(span_frame);
             sakura_terminal_free(span_terminal);
@@ -167,6 +195,15 @@ int main(void)
     }
     if (!check(span_count >= 4 && next_left == 100,
                "C API bounded run spans did not cover the row")) {
+        sakura_terminal_frame_free(span_frame);
+        sakura_terminal_free(span_terminal);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    const size_t narrow_span_count = sakura_terminal_frame_row_span_count(
+        span_frame, 0, 16);
+    if (!check(narrow_span_count > span_count,
+               "C API span bound was not caller-configurable")) {
         sakura_terminal_frame_free(span_frame);
         sakura_terminal_free(span_terminal);
         sakura_terminal_free(terminal);
