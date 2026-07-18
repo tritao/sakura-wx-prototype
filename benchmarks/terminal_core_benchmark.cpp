@@ -85,36 +85,41 @@ struct RunStats {
     std::uint64_t cells = 0;
     std::uint64_t text_bytes = 0;
     std::uint64_t checksum = 0;
+    bool valid = true;
 };
+
+void AccumulateRun(void* userdata, const SakuraTerminalRunView* run)
+{
+    auto* stats = static_cast<RunStats*>(userdata);
+    if (stats == nullptr || run == nullptr || run->cell_count == 0 ||
+        run->cell_count > SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS) {
+        if (stats != nullptr)
+            stats->valid = false;
+        return;
+    }
+    ++stats->count;
+    stats->cells += run->cell_count;
+    stats->text_bytes += run->text_length;
+    stats->checksum ^= run->style_id +
+        (static_cast<std::uint64_t>(run->row) << 8) +
+        (static_cast<std::uint64_t>(run->left) << 24);
+    for (std::size_t text_index = 0; text_index < run->text_length;
+         ++text_index) {
+        stats->checksum = (stats->checksum * 131) ^
+            static_cast<unsigned char>(run->text[text_index]);
+    }
+}
 
 RunStats EnumerateRuns(const SakuraTerminalFrame* frame,
                        const SakuraTerminalFrameInfo& info)
 {
     RunStats stats;
     for (unsigned int row = 0; row < info.rows; ++row) {
-        const std::size_t run_count =
-            sakura_terminal_frame_row_span_count(
-                frame, row, SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS);
-        for (std::size_t index = 0; index < run_count; ++index) {
-            SakuraTerminalRunView run {};
-            Check(sakura_terminal_frame_row_span(
-                      frame, row, index,
-                      SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS, &run),
-                  "row-span lookup failed");
-            Check(run.cell_count <= SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS,
-                  "row-run span exceeded the packed bound");
-            ++stats.count;
-            stats.cells += run.cell_count;
-            stats.text_bytes += run.text_length;
-            stats.checksum ^= run.style_id +
-                (static_cast<std::uint64_t>(run.row) << 8) +
-                (static_cast<std::uint64_t>(run.left) << 24);
-            for (std::size_t text_index = 0; text_index < run.text_length;
-                 ++text_index) {
-                stats.checksum = (stats.checksum * 131) ^
-                    static_cast<unsigned char>(run.text[text_index]);
-            }
-        }
+        Check(sakura_terminal_frame_for_each_row_span(
+                  frame, row, SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS,
+                  &AccumulateRun, &stats),
+              "row-span iteration failed");
+        Check(stats.valid, "row-run span exceeded the packed bound");
     }
     return stats;
 }

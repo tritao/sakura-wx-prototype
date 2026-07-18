@@ -581,29 +581,20 @@ private:
             2u, config_.glyph_cache_max_run_cells);
 
         for (unsigned int row = top; row < bottom; ++row) {
-            const std::size_t bounded_run_count = cache_glyphs
-                ? sakura_terminal_frame_row_span_count(
-                      frame, row, glyph_run_span_cells) : 0;
-            const bool use_bounded_spans = cache_glyphs && bounded_run_count > 0;
-            const std::size_t run_count = use_bounded_spans
-                ? bounded_run_count
-                : sakura_terminal_frame_row_run_count(frame, row);
             std::vector<SakuraTerminalRunView> row_runs;
-            row_runs.reserve(run_count);
-            for (std::size_t index = 0; index < run_count; ++index) {
-                SakuraTerminalRunView run {};
-                const int valid = use_bounded_spans
-                    ? sakura_terminal_frame_row_span(
-                          frame, row, index, glyph_run_span_cells, &run)
-                    : sakura_terminal_frame_row_run(frame, row, index, &run);
-                if (valid)
-                    row_runs.push_back(run);
+            const std::size_t logical_run_count =
+                sakura_terminal_frame_row_run_count(frame, row);
+            row_runs.reserve(logical_run_count);
+            if (cache_glyphs && !sakura_terminal_frame_for_each_row_span(
+                    frame, row, glyph_run_span_cells, &Impl::AppendRowSpan,
+                    &row_runs)) {
+                row_runs.clear();
             }
-            if (use_bounded_spans && row_runs.empty()) {
-                const std::size_t logical_run_count =
-                    sakura_terminal_frame_row_run_count(frame, row);
-                row_runs.reserve(logical_run_count);
-                for (std::size_t index = 0; index < logical_run_count; ++index) {
+            const bool use_bounded_spans = cache_glyphs && !row_runs.empty();
+            if (!use_bounded_spans) {
+                row_runs.clear();
+                for (std::size_t index = 0; index < logical_run_count;
+                     ++index) {
                     SakuraTerminalRunView run {};
                     if (sakura_terminal_frame_row_run(frame, row, index, &run))
                         row_runs.push_back(run);
@@ -771,6 +762,16 @@ private:
                 break;
             }
         }
+    }
+
+    static void AppendRowSpan(void* userdata,
+                              const SakuraTerminalRunView* span)
+    {
+        if (userdata == nullptr || span == nullptr)
+            return;
+        auto* row_runs = static_cast<std::vector<SakuraTerminalRunView>*>(
+            userdata);
+        row_runs->push_back(*span);
     }
 
     void EnsureFramebuffer()

@@ -38,7 +38,10 @@ also exposes coalesced row-local dirty spans. Native frontends can request
 cached UTF-8
 row runs with packed style identifiers and resolved RGB attributes, avoiding
 per-cell language-boundary calls. Run text is borrowed until the frame is
-released.
+released. Renderers that need bounded glyph-cache spans should use the
+one-pass `sakura_terminal_frame_for_each_row_span()` visitor; the older
+count-plus-index functions remain available for random access but repeatedly
+walk the row when used to enumerate every span.
 
 The core intentionally has no internal mutex. This keeps terminal parsing,
 selection, and snapshot generation deterministic and avoids presenting a false

@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SAKURA_TERMINAL_CORE_ABI_VERSION 5u
+#define SAKURA_TERMINAL_CORE_ABI_VERSION 6u
 #define SAKURA_TERMINAL_INVALID UINT32_MAX
 /* A renderer may request a different span bound through the frame API. */
 #define SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS 32u
@@ -126,6 +126,11 @@ typedef struct SakuraTerminalRunView {
     uint8_t attributes;
 } SakuraTerminalRunView;
 
+/* Called synchronously for each row span while the frame remains alive. The
+ * run view and its text are borrowed from the frame and must not be retained. */
+typedef void (*SakuraTerminalFrameSpanCallback)(
+    void *userdata, const SakuraTerminalRunView *span);
+
 /* Run text is UTF-8 borrowed from the frame. Row runs are homogeneous in
  * style; `cell_count` counts terminal grid cells, so it includes the two-cell
  * advance of a wide glyph. Bounded spans are exposed separately below. */
@@ -234,6 +239,13 @@ int sakura_terminal_frame_row_span(const SakuraTerminalFrame *frame,
                                    unsigned int row, size_t index,
                                    unsigned int max_cells,
                                    SakuraTerminalRunView *span);
+/* Visit all flattened row spans in one pass. This avoids the repeated
+ * rescanning inherent in count-plus-index access when a renderer needs every
+ * span. Returns zero for invalid arguments or an invalid frame. */
+int sakura_terminal_frame_for_each_row_span(
+    const SakuraTerminalFrame *frame, unsigned int row,
+    unsigned int max_cells, SakuraTerminalFrameSpanCallback callback,
+    void *userdata);
 
 void sakura_terminal_get_metrics(const SakuraTerminal *terminal,
                                  SakuraTerminalMetrics *metrics);

@@ -15,6 +15,25 @@ static int check(int condition, const char *message)
     return condition;
 }
 
+struct SpanCollector {
+    size_t count;
+    unsigned int next_left;
+    int valid;
+};
+
+static void collect_span(void *userdata, const SakuraTerminalRunView *span)
+{
+    struct SpanCollector *collector = (struct SpanCollector *)userdata;
+    if (collector == NULL || span == NULL || span->cell_count == 0 ||
+        span->left != collector->next_left || span->cell_count > 32) {
+        if (collector != NULL)
+            collector->valid = 0;
+        return;
+    }
+    collector->next_left += span->cell_count;
+    ++collector->count;
+}
+
 int main(void)
 {
     SakuraTerminal *terminal = sakura_terminal_new(NULL, NULL);
@@ -252,6 +271,18 @@ int main(void)
         span_frame, 0, 16);
     if (!check(narrow_span_count > span_count,
                "C API span bound was not caller-configurable")) {
+        sakura_terminal_frame_free(span_frame);
+        sakura_terminal_free(span_terminal);
+        sakura_terminal_free(terminal);
+        return 1;
+    }
+    struct SpanCollector collected = {0, 0, 1};
+    if (!check(sakura_terminal_frame_for_each_row_span(
+                   span_frame, 0,
+                   SAKURA_TERMINAL_DEFAULT_RUN_SPAN_MAX_CELLS,
+                   &collect_span, &collected) && collected.valid &&
+                   collected.count == span_count && collected.next_left == 100,
+               "C API row span iterator did not cover the row in order")) {
         sakura_terminal_frame_free(span_frame);
         sakura_terminal_free(span_terminal);
         sakura_terminal_free(terminal);

@@ -1287,11 +1287,13 @@ static bool FillPackedRunView(const PackedGrid& grid,
     return true;
 }
 
-static bool PackedRunSpanAt(const PackedRow& row, const PackedRun& source,
-                            unsigned int max_cells, std::size_t span_index,
-                            PackedRun* span)
+template <typename Callback>
+static bool ForEachPackedRunSpan(const PackedRow& row,
+                                  const PackedRun& source,
+                                  unsigned int max_cells,
+                                  Callback&& callback)
 {
-    if (span == nullptr || max_cells == 0 || source.cell_count == 0 ||
+    if (max_cells == 0 || source.cell_count == 0 ||
         source.left >= row.cells.size() ||
         source.cell_count > row.cells.size() - source.left)
         return false;
@@ -1299,7 +1301,6 @@ static bool PackedRunSpanAt(const PackedRow& row, const PackedRun& source,
     /* A two-cell glyph is the smallest indivisible span. */
     max_cells = std::max(2u, max_cells);
     unsigned int cell_offset = 0;
-    std::size_t current_index = 0;
     while (cell_offset < source.cell_count) {
         unsigned int cell_count = std::min(
             max_cells, source.cell_count - cell_offset);
@@ -1311,33 +1312,31 @@ static bool PackedRunSpanAt(const PackedRow& row, const PackedRun& source,
         }
         if (cell_count == 0)
             return false;
-        if (current_index == span_index) {
-            const unsigned int first_column = source.left + cell_offset;
-            const unsigned int last_column = first_column + cell_count - 1;
-            const PackedCell& first_cell = row.cells[first_column];
-            const PackedCell& last_cell = row.cells[last_column];
-            if (first_cell.text_offset > row.text.size() ||
-                first_cell.text_length > row.text.size() -
-                    first_cell.text_offset ||
-                last_cell.text_offset > row.text.size() ||
-                last_cell.text_length > row.text.size() -
-                    last_cell.text_offset)
-                return false;
-            span->left = first_column;
-            span->cell_count = cell_count;
-            span->style_index = source.style_index;
-            span->text_offset = first_cell.text_offset;
-            const uint32_t text_end = last_cell.text_offset +
-                last_cell.text_length;
-            if (text_end < span->text_offset)
-                return false;
-            span->text_length = text_end - span->text_offset;
-            return true;
-        }
+        const unsigned int first_column = source.left + cell_offset;
+        const unsigned int last_column = first_column + cell_count - 1;
+        const PackedCell& first_cell = row.cells[first_column];
+        const PackedCell& last_cell = row.cells[last_column];
+        if (first_cell.text_offset > row.text.size() ||
+            first_cell.text_length > row.text.size() - first_cell.text_offset ||
+            last_cell.text_offset > row.text.size() ||
+            last_cell.text_length > row.text.size() - last_cell.text_offset)
+            return false;
+
+        PackedRun span {};
+        span.left = first_column;
+        span.cell_count = cell_count;
+        span.style_index = source.style_index;
+        span.text_offset = first_cell.text_offset;
+        const uint32_t text_end = last_cell.text_offset +
+            last_cell.text_length;
+        if (text_end < span.text_offset)
+            return false;
+        span.text_length = text_end - span.text_offset;
+        if (!callback(span))
+            return false;
         cell_offset += cell_count;
-        ++current_index;
     }
-    return false;
+    return true;
 }
 
 static std::size_t PackedRunSpanCount(const PackedRow& row,
@@ -1347,10 +1346,38 @@ static std::size_t PackedRunSpanCount(const PackedRow& row,
     if (max_cells == 0)
         return 0;
     std::size_t count = 0;
-    PackedRun span {};
-    while (PackedRunSpanAt(row, source, max_cells, count, &span))
-        ++count;
+    if (!ForEachPackedRunSpan(row, source, max_cells,
+            [&](const PackedRun&) {
+                ++count;
+                return true;
+            }))
+        return 0;
     return count;
+}
+
+static bool PackedRowSpanAt(const PackedRow& row, std::size_t span_index,
+                            unsigned int max_cells, PackedRun* span)
+{
+    if (span == nullptr || max_cells == 0)
+        return false;
+
+    std::size_t current_index = 0;
+    for (const PackedRun& source : row.runs) {
+        bool found = false;
+        const bool complete = ForEachPackedRunSpan(
+            row, source, max_cells, [&](const PackedRun& candidate) {
+                if (current_index++ != span_index)
+                    return true;
+                *span = candidate;
+                found = true;
+                return false;
+            });
+        if (found)
+            return true;
+        if (!complete)
+            return false;
+    }
+    return false;
 }
 
 extern "C" {
@@ -1751,19 +1778,46 @@ int sakura_terminal_frame_row_span(const SakuraTerminalFrame* frame,
             grid.row_data[row] == nullptr)
             return 0;
         const PackedRow& source_row = *grid.row_data[row];
-        for (const PackedRun& source : source_row.runs) {
-            const std::size_t count = PackedRunSpanCount(
-                source_row, source, max_cells);
-            if (index < count) {
-                PackedRun bounded;
-                return PackedRunSpanAt(source_row, source, max_cells, index,
-                                       &bounded) &&
-                        FillPackedRunView(grid, source_row, row, bounded, span)
-                    ? 1 : 0;
-            }
-            index -= count;
-        }
+        PackedRun bounded {};
+        return PackedRowSpanAt(source_row, index, max_cells, &bounded) &&
+                FillPackedRunView(grid, source_row, row, bounded, span)
+            ? 1 : 0;
+    } catch (...) {
         return 0;
+    }
+}
+
+int sakura_terminal_frame_for_each_row_span(
+    const SakuraTerminalFrame* frame, unsigned int row,
+    unsigned int max_cells, SakuraTerminalFrameSpanCallback callback,
+    void* userdata)
+{
+    try {
+        if (frame == nullptr || callback == nullptr ||
+            frame->packed_frame == nullptr ||
+            frame->packed_frame->grid == nullptr || max_cells == 0)
+            return 0;
+        const PackedFrame& packed = *frame->packed_frame;
+        const PackedGrid& grid = *packed.grid;
+        if (row >= packed.rows || row >= grid.row_data.size() ||
+            grid.row_data[row] == nullptr)
+            return 0;
+        const PackedRow& source_row = *grid.row_data[row];
+        for (const PackedRun& source : source_row.runs) {
+            const bool complete = ForEachPackedRunSpan(
+                source_row, source, max_cells,
+                [&](const PackedRun& bounded) {
+                    SakuraTerminalRunView view {};
+                    if (!FillPackedRunView(
+                            grid, source_row, row, bounded, &view))
+                        return false;
+                    callback(userdata, &view);
+                    return true;
+                });
+            if (!complete)
+                return 0;
+        }
+        return 1;
     } catch (...) {
         return 0;
     }
